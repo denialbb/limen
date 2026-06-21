@@ -37,11 +37,11 @@ Classifies tasks by **type** and **complexity**, compresses user prompts, extrac
 
 Specialized models, one per execution role:
 
-| Model | Role | Task Types |
-|---|---|---|
-| Gemma Planner | Architect & Researcher | architecture, document_writing, research |
-| DeepSeek Coder | Code Generator | code_writing |
-| Qwen Patcher | Debugger & Fixer | debugging |
+| Model          | Role                   | Task Types                               |
+| -------------- | ---------------------- | ---------------------------------------- |
+| Gemma Planner  | Architect & Researcher | architecture, document_writing, research |
+| DeepSeek Coder | Code Generator         | code_writing                             |
+| Qwen Patcher   | Debugger & Fixer       | debugging                                |
 
 Workers produce initial outputs for validation or final use.
 
@@ -59,13 +59,13 @@ For `code_writing` at hard complexity, L3 also **decomposes** the task into subp
 
 ## Routing Matrix
 
-| Task | easy | normal | hard |
-|---|---|---|---|
-| code_writing | L2 | L2 → L3 | L3 (decompose → subagents → validate) |
-| debugging | L2 | L2 → L3 | L3 |
-| architecture | L2 → L3 | L3 | L3 |
-| document_writing | L2 | L2 → L3 | L2 → L3 |
-| research | L2 → L3 | L2 → L3 | L3 |
+| Task             | easy    | normal  | hard                                  |
+| ---------------- | ------- | ------- | ------------------------------------- |
+| code_writing     | L2      | L2 → L3 | L3 (decompose → subagents → validate) |
+| debugging        | L2      | L2 → L3 | L3                                    |
+| architecture     | L2 → L3 | L3      | L3                                    |
+| document_writing | L2      | L2 → L3 | L2 → L3                               |
+| research         | L2 → L3 | L2 → L3 | L3                                    |
 
 ---
 
@@ -132,6 +132,44 @@ Deliberately unresolved:
 ## Current Status
 
 Early-stage design. No production implementation. Model stack selected (Gemini Pro + Gemma Planner + DeepSeek Coder + Qwen Patcher). Focus: validate routing logic, prototype MCP toolchains, stress-test validation loops.
+
+---
+
+## Setup
+
+To set up the development environment and wire the MCP server into Antigravity:
+
+1. **Fix pyproject.toml Configuration**:
+   Ensure `package-dir` is correctly declared under `[tool.setuptools]` (since standard setuptools does not allow `package-dir` directly inside the `[project]` block).
+
+2. **Install Dependencies & Editable Package**:
+   Activate the virtual environment, then install test tools and register the package:
+   ```bash
+   uv pip install pytest pytest-asyncio
+   uv pip install -e .
+   ```
+
+3. **Configure MCP Server**:
+   Add the following config to your global `mcp_config.json` (typically at `~/.gemini/config/mcp_config.json` and/or `~/.gemini/antigravity-cli/mcp_config.json`):
+   ```json
+   {
+     "mcpServers": {
+       "opencode": {
+         "command": "/home/denialbb/projects/limen/.venv/bin/python",
+         "args": [
+           "/home/denialbb/projects/limen/src/limen/mcp_server/limen_mcp.py"
+         ]
+       }
+     }
+   }
+   ```
+
+4. **Run Tests**:
+   Execute tests locally via pytest:
+   ```bash
+   pytest
+   ```
+   Or invoke the `run_tests` tool directly on the MCP server once registered.
 
 ---
 
