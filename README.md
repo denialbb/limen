@@ -154,7 +154,7 @@ To set up the development environment and wire the MCP server into Antigravity:
    ```json
    {
      "mcpServers": {
-       "opencode": {
+       "limen": {
          "command": "/home/denialbb/projects/limen/.venv/bin/python",
          "args": [
            "/home/denialbb/projects/limen/src/limen/mcp_server/limen_mcp.py"

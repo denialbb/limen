@@ -1,7 +1,7 @@
 from mcp.server.fastmcp import FastMCP
 import requests
 
-mcp = FastMCP("opencode")
+mcp = FastMCP("limen")
 
 
 # ---------------------------------------------------
