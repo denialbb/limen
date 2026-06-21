@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "opencode": {
+      "command": "python",
+      "args": ["limen/src/mpc/limen_mcp.py"]
+    }
+  }
+}

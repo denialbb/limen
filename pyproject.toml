@@ -1,0 +1,8 @@
+[project]
+name = "limen"
+version = "0.1.0"
+description = "A agent collaboration framework with MCP"
+readme = "README.md"
+package-dir = { "" = "src" }
+requires-python = ">=3.14"
+dependencies = []
