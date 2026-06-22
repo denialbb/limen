@@ -106,7 +106,7 @@ type EventBus interface {
 ```
 
 - `ChannelBus`: buffered Go channel implementation.
-- **Backpressure policy**: a fixed large buffer (1024) with **blocking publish**. No drops. Losing an edit event would corrupt the "see what workers do" guarantee. In single-task v1 the TUI consumes far faster than producers, so the block is effectively never hit. This must be revisited for multi-task v2.
+- **Backpressure policy**: a fixed large buffer (1024) with **blocking publish**. No events are dropped while the bus is open. Losing an edit event would corrupt the "see what workers do" guarantee. In single-task v1 the TUI consumes far faster than producers, so the block is effectively never hit. This must be revisited for multi-task v2.
 - **v2 seam**: `RedisBus` implements the same `EventBus` interface; zero producer or consumer churn when introduced.
 
 ## Interface Widening
@@ -128,21 +128,26 @@ Rationale for explicit parameter over `context.Context` carriage: visibility in 
 
 ## Event Taxonomy
 
+Every event carries a `TaskID` and a `Timestamp` so the TUI can route and order events unambiguously, even if the bus later supports multiple tasks.
+
 | Event | Emitter | Tab |
 |---|---|---|
-| `TaskStateChanged{from, to, ts}` | orchestrator | Timeline |
-| `ContextBuilt{snapshotSize, manifestRef, ts}` | retriever | Router |
-| `RouterExamining{contextExcerpt, entropy, ts}` | router | Router |
-| `RouterDecision{decision, rationale, expandCount, ts}` | router | Router |
-| `WorkerStarted{worktreePath, baseCommit, retry, ts}` | worker | Worker |
-| `WorkerToolCall{tool, args, ts}` | worker | Worker |
-| `WorkerFileEdit{path, op, diffHunk, ts}` | worker (via Python NDJSON) | Worker |
-| `WorkerFinished{ts}` | worker | Worker |
-| `ValidatorExamining{criteria, ts}` | validator | Validator |
-| `ValidatorCriterionResult{criterion, passed, detail, ts}` | validator | Validator |
-| `ValidatorVerdict{passes, feedback, ts}` | validator | Validator |
-| `ConflictDetected{regions, ts}` | orchestrator/git | Worker |
-| `TaskFinalized{finalState, finalOutputRef, ts}` | orchestrator | Timeline |
+| `TaskStateChanged{taskID, from, to, ts}` | orchestrator | Timeline |
+| `ContextBuilt{taskID, snapshotSize, manifestRef, ts}` | retriever | Router |
+| `RouterExamining{taskID, contextExcerpt, entropy, ts}` | router | Router |
+| `RouterDecisionEvent{taskID, decision, rationale, expandCount, ts}` | router | Router |
+| `WorkerStarted{taskID, worktreePath, baseCommit, retry, ts}` | worker | Worker |
+| `WorkerToolCall{taskID, tool, args, ts}` | worker | Worker |
+| `WorkerFileEdit{taskID, path, op, diffHunk, ts}` | worker (via Python NDJSON) | Worker |
+| `WorkerFinished{taskID, ts}` | worker | Worker |
+| `ValidatorExamining{taskID, criteria, ts}` | validator | Validator |
+| `ValidatorCriterionResult{taskID, criterion, passed, detail, ts}` | validator | Validator |
+| `ValidatorVerdict{taskID, passes, feedback, ts}` | validator | Validator |
+| `ConflictDetected{taskID, regions, ts}` | orchestrator/git | Worker |
+| `TaskFinalized{taskID, finalState, finalOutputRef, ts}` | orchestrator | Timeline |
+| `OrchestratorError{taskID, error, ts}` | orchestrator | Timeline |
+
+NOTE: The `RouterDecision` event type is named `RouterDecisionEvent` in `internal/bus` to avoid a type-collision with the mirrored `RouterDecision` string type. Its `kind()` string remains `"RouterDecision"`.
 
 ## TUI Layout
 
