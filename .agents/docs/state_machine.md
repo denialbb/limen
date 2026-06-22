@@ -21,6 +21,7 @@ stateDiagram-v2
     WORKER_RUNNING --> AWAITING_VALIDATION
     
     AWAITING_VALIDATION --> REVISION_REQUESTED : L3 issues found
+    AWAITING_VALIDATION --> FAILED_ESCALATED : reject / retry exhaustion
     REVISION_REQUESTED --> WORKER_RUNNING : Retry count < Max
     REVISION_REQUESTED --> FAILED_ESCALATED : Retry count == Max
     
@@ -39,7 +40,7 @@ stateDiagram-v2
 - **`ROUTING_EVALUATION`**: The router analyzes context entropy and confidence. It decides whether to `proceed` to execution, loop back to `expand` the context, or `escalate` immediately if the context is fundamentally unresolvable.
 - **`WORKER_RUNNING`**: The L2 Worker model is actively generating or editing code within an isolated `git worktree`.
 - **`AWAITING_VALIDATION`**: The worker has completed its output. The system pauses the worker and hands the artifacts over to the L3 Validator.
-- **`REVISION_REQUESTED`**: The L3 Validator identified flaws in the artifacts. The retry counter is incremented, and the task loops back to `WORKER_RUNNING` with the validator's feedback.
+- **`REVISION_REQUESTED`**: The L3 Validator identified flaws in the artifacts, OR the worktree contains merge/rebase conflicts that require repair. Note that validation failures and conflict repairs share the same retry budget. The retry counter is incremented, and the task loops back to `WORKER_RUNNING` with feedback.
 - **`FAILED_ESCALATED`**: Terminal failure. Triggered either by exhausting the maximum allowed retry loops (e.g., >5 for hard tasks) or by the router facing unresolvable entropy. The system halts and requests human intervention.
 - **`APPROVED`**: The L3 Validator has verified the correctness of the artifacts.
 - **`COMMITTED`**: The isolated `git worktree` is merged into the canonical branch, and the worktree is destroyed. The task is fully complete.
@@ -48,8 +49,9 @@ stateDiagram-v2
 
 1. **State Ownership**: Only the Go Core can initiate a state transition. Python MCP clients can only request actions.
 2. **Strict Linearity of Validation**: A task cannot move to `COMMITTED` without passing through `APPROVED`.
-3. **No Infinite Loops**: The transition from `REVISION_REQUESTED` to `WORKER_RUNNING` is strictly gated by the max retry limit.
+3. **No Infinite Loops**: The transition from `REVISION_REQUESTED` to `WORKER_RUNNING` is strictly gated by the max retry limit. The `ROUTING_EVALUATION` to `CONTEXT_BUILDING` expand loop is also bounded; exceeding the expand budget escalates to `FAILED_ESCALATED`.
 4. **Router Precedence**: The worker cannot run until `ROUTING_EVALUATION` yields a explicit `proceed` decision.
+5. **Fatal Validation Shortcut**: `AWAITING_VALIDATION` may transition directly to `FAILED_ESCALATED` when the Validator emits a fatal `reject` signal or when all retries are exhausted before reaching `REVISION_REQUESTED`.
 
 ## Orchestration Pipeline (Go Core Main Loop)
 

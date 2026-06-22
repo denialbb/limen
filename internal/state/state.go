@@ -68,8 +68,9 @@ type Store interface {
 	RecordContextSnapshot(id string, snapshot string) error
 }
 
-// isValidTransition encodes the Limen Task State Machine.
-func isValidTransition(current, next TaskState) bool {
+// IsValidTransition encodes the Limen Task State Machine.
+// It is exported so tests and mocks can delegate to the canonical definition.
+func IsValidTransition(current, next TaskState) bool {
 	switch current {
 	case StateCreated:
 		return next == StateContextBuilding

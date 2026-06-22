@@ -71,6 +71,28 @@ func (s *SQLiteStore) createSchema() error {
 		context_snapshot TEXT
 	);
 
+	CREATE TABLE IF NOT EXISTS state_transitions (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		task_id TEXT NOT NULL,
+		from_state TEXT NOT NULL,
+		to_state TEXT NOT NULL,
+		occurred_at INTEGER NOT NULL,
+		FOREIGN KEY (task_id) REFERENCES tasks(id)
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_state_transitions_task_id ON state_transitions(task_id);
+
+	CREATE TABLE IF NOT EXISTS validation_decisions (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		task_id TEXT NOT NULL,
+		pass INTEGER NOT NULL,
+		feedback TEXT NOT NULL,
+		recorded_at INTEGER NOT NULL,
+		FOREIGN KEY (task_id) REFERENCES tasks(id)
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_validation_decisions_task_id ON validation_decisions(task_id);
+
 	CREATE TABLE IF NOT EXISTS tool_calls (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		task_id TEXT NOT NULL,
@@ -160,12 +182,19 @@ func (s *SQLiteStore) TransitionState(id string, newState TaskState) error {
 		return fmt.Errorf("select current state: %w", err)
 	}
 
-	if !isValidTransition(current, newState) {
+	if !IsValidTransition(current, newState) {
 		return ErrInvalidTransition
 	}
 
 	if _, err := tx.Exec("UPDATE tasks SET current_state = ? WHERE id = ?", newState, id); err != nil {
 		return fmt.Errorf("update state: %w", err)
+	}
+
+	if _, err := tx.Exec(
+		"INSERT INTO state_transitions (task_id, from_state, to_state, occurred_at) VALUES (?, ?, ?, ?)",
+		id, current, newState, time.Now().Unix(),
+	); err != nil {
+		return fmt.Errorf("insert state transition: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -244,27 +273,46 @@ type validationDecision struct {
 }
 
 // RecordValidationDecision persists the validation decision and feedback.
+// It appends to the validation_decisions history table so that every signal
+// in a retry loop remains reproducible, and also updates the tasks row with
+// the latest decision for convenience.
 func (s *SQLiteStore) RecordValidationDecision(id string, pass bool, feedback string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var dummy int
+	if err := tx.QueryRow("SELECT 1 FROM tasks WHERE id = ?", id).Scan(&dummy); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrTaskNotFound
+		}
+		return fmt.Errorf("check task existence: %w", err)
+	}
+
+	if _, err := tx.Exec(
+		"INSERT INTO validation_decisions (task_id, pass, feedback, recorded_at) VALUES (?, ?, ?, ?)",
+		id, pass, feedback, time.Now().Unix(),
+	); err != nil {
+		return fmt.Errorf("insert validation decision: %w", err)
+	}
+
 	decision := validationDecision{Pass: pass, Feedback: feedback}
 	data, err := json.Marshal(decision)
 	if err != nil {
 		return fmt.Errorf("marshal validation decision: %w", err)
 	}
 
-	res, err := s.db.Exec(
+	if _, err := tx.Exec(
 		"UPDATE tasks SET validation_decision = ? WHERE id = ?",
 		string(data), id,
-	)
-	if err != nil {
+	); err != nil {
 		return fmt.Errorf("update validation decision: %w", err)
 	}
 
-	rows, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("rows affected: %w", err)
-	}
-	if rows == 0 {
-		return ErrTaskNotFound
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit validation decision: %w", err)
 	}
 	return nil
 }
@@ -307,6 +355,74 @@ func (s *SQLiteStore) RecordContextSnapshot(id string, snapshot string) error {
 		return ErrTaskNotFound
 	}
 	return nil
+}
+
+// StateTransition records a single task state change for replay/audit.
+type StateTransition struct {
+	ID         int64
+	TaskID     string
+	FromState  TaskState
+	ToState    TaskState
+	OccurredAt int64
+}
+
+// GetStateTransitions returns the full ordered history of state transitions for a task.
+func (s *SQLiteStore) GetStateTransitions(id string) ([]StateTransition, error) {
+	rows, err := s.db.Query(
+		"SELECT id, task_id, from_state, to_state, occurred_at FROM state_transitions WHERE task_id = ? ORDER BY id ASC",
+		id,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query state transitions: %w", err)
+	}
+	defer rows.Close()
+
+	var transitions []StateTransition
+	for rows.Next() {
+		var st StateTransition
+		if err := rows.Scan(&st.ID, &st.TaskID, &st.FromState, &st.ToState, &st.OccurredAt); err != nil {
+			return nil, fmt.Errorf("scan state transition: %w", err)
+		}
+		transitions = append(transitions, st)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate state transitions: %w", err)
+	}
+	return transitions, nil
+}
+
+// ValidationDecisionRecord is a single persisted validation signal.
+type ValidationDecisionRecord struct {
+	ID         int64
+	TaskID     string
+	Pass       bool
+	Feedback   string
+	RecordedAt int64
+}
+
+// GetValidationDecisions returns the full ordered history of validation decisions for a task.
+func (s *SQLiteStore) GetValidationDecisions(id string) ([]ValidationDecisionRecord, error) {
+	rows, err := s.db.Query(
+		"SELECT id, task_id, pass, feedback, recorded_at FROM validation_decisions WHERE task_id = ? ORDER BY id ASC",
+		id,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query validation decisions: %w", err)
+	}
+	defer rows.Close()
+
+	var decisions []ValidationDecisionRecord
+	for rows.Next() {
+		var vd ValidationDecisionRecord
+		if err := rows.Scan(&vd.ID, &vd.TaskID, &vd.Pass, &vd.Feedback, &vd.RecordedAt); err != nil {
+			return nil, fmt.Errorf("scan validation decision: %w", err)
+		}
+		decisions = append(decisions, vd)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate validation decisions: %w", err)
+	}
+	return decisions, nil
 }
 
 // isUniqueConstraintError detects SQLite UNIQUE constraint violations.
