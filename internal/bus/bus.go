@@ -91,7 +91,16 @@ func (b *ChannelBus) Subscribe() <-chan Event {
 // channel). This serializes publishers and means Close waits for any
 // in-flight Publish to complete; both are acceptable v1 tradeoffs per
 // the design document's single-task, fast-consumer assumptions.
+//
+// TODO: For multi-task v2, consider non-blocking sends with drop-or-queue
+// semantics to prevent a slow consumer from stalling Close indefinitely.
 func (b *ChannelBus) Publish(ev Event) {
+	// NOTE: Silently drop nil events as a defensive measure so a stray
+	// bus.Publish(nil) cannot poison subscriber streams (and downstream
+	// kind() dereferences cannot panic on a nil interface).
+	if ev == nil {
+		return
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.closed {
@@ -150,6 +159,12 @@ func NewRecorderEmitter() *RecorderEmitter {
 
 // Publish appends the event to the recorded history.
 func (r *RecorderEmitter) Publish(ev Event) {
+	// NOTE: Silently drop nil events as a defensive measure so a stray
+	// Publish(nil) cannot corrupt the recording (and EventsByKind's
+	// ev.kind() call cannot panic on a nil interface).
+	if ev == nil {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.events = append(r.events, ev)

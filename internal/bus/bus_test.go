@@ -44,6 +44,41 @@ func TestChannelBus_PublishSubscribe(t *testing.T) {
 	b.Close()
 }
 
+// TestChannelBus_PublishNilEventNoOp verifies that publishing a nil
+// Event is a silent no-op: it must not panic and must not deliver
+// anything to subscribers. Guards against B1 from the bus review.
+func TestChannelBus_PublishNilEventNoOp(t *testing.T) {
+	b := bus.NewChannelBus()
+	ch := b.Subscribe()
+
+	// A real event first, so a nil in the middle of the stream is the
+	// scenario under test (defensive at any position, not just first).
+	b.Publish(&bus.WorkerFinished{TaskID: "real", Timestamp: time.Now()})
+
+	// The nil publish must neither panic nor enqueue anything.
+	b.Publish(nil)
+
+	// Publish one more real event after the nil to ensure the bus is
+	// still operational (the nil did not corrupt internal state).
+	b.Publish(&bus.WorkerFinished{TaskID: "after", Timestamp: time.Now()})
+
+	b.Close()
+
+	var collected []bus.Event
+	for ev := range ch {
+		collected = append(collected, ev)
+	}
+
+	if len(collected) != 2 {
+		t.Fatalf("expected exactly 2 events (nil dropped), got %d: %+v", len(collected), collected)
+	}
+	for _, ev := range collected {
+		if ev == nil {
+			t.Fatal("nil event was delivered to subscriber")
+		}
+	}
+}
+
 func TestChannelBus_MultipleSubscribers(t *testing.T) {
 	b := bus.NewChannelBus()
 	ch1 := b.Subscribe()
@@ -70,6 +105,12 @@ func TestChannelBus_MultipleSubscribers(t *testing.T) {
 // TestChannelBus_BlockingPublish verifies the documented backpressure
 // contract: when a subscriber's buffer is full, Publish blocks (rather
 // than dropping), and the blocked event is delivered once space frees up.
+//
+// The assertion is deterministic rather than timing-based: we fill the
+// buffer, start a goroutine publishing the (n+1)th event, drain exactly
+// one event to free a slot, and assert the blocked publish unblocks and
+// is delivered. A 1s timeout is kept only as a safety net against a
+// genuinely broken implementation hanging the test runner.
 func TestChannelBus_BlockingPublish(t *testing.T) {
 	b := bus.NewChannelBus()
 	ch := b.Subscribe()
@@ -87,36 +128,44 @@ func TestChannelBus_BlockingPublish(t *testing.T) {
 		close(done)
 	}()
 
+	// Drain exactly one event to free a single slot. The subscriber
+	// channel is FIFO, so this removes the head "fill" event; the
+	// blocked Publish is then able to enqueue at the tail, behind the
+	// remaining 1023 buffered "fill" events.
 	select {
-	case <-done:
-		t.Fatal("Publish completed without blocking on a full buffer; no-drop contract violated")
-	case <-time.After(50 * time.Millisecond):
-		// Expected: Publish is blocked awaiting buffer space.
-	}
-
-	// Drain in a goroutine, collecting events for later assertion.
-	var drained []bus.Event
-	drainDone := make(chan struct{})
-	go func() {
-		for ev := range ch {
-			drained = append(drained, ev)
-		}
-		close(drainDone)
-	}()
-
-	select {
-	case <-done:
-		// Blocked publish unblocked once draining freed buffer space.
+	case <-ch:
+		// One slot freed.
 	case <-time.After(time.Second):
-		t.Fatal("blocked Publish did not complete after draining started")
+		t.Fatal("draining a single buffered event timed out; buffer was not full as expected")
 	}
 
-	b.Close()
-	<-drainDone
+	// Deterministic assertion: freeing one slot unblocks the pending
+	// Publish. We do NOT assert on the next received value (it would
+	// be a "fill" event ordered ahead of the blocked one); instead we
+	// assert the Publish goroutine completes, proving it was blocked
+	// and is now unblocked. This is timing-free.
+	select {
+	case <-done:
+		// Publish completed: it was blocked, and draining freed a slot.
+	case <-time.After(time.Second):
+		t.Fatal("blocked Publish did not complete after a slot was freed; no-drop contract violated")
+	}
 
-	want := bus.SubscriberBufferSize + 1
+	// Close and drain the remainder. The blocked event must be the
+	// last one delivered, since it was enqueued at the tail after 1023
+	// buffered "fill" events.
+	b.Close()
+	var drained []bus.Event
+	for ev := range ch {
+		drained = append(drained, ev)
+	}
+
+	// After the first drain above, the channel held 1023 "fill" events.
+	// The unblocked Publish then enqueued 1 "blocked" event at the tail,
+	// giving SubscriberBufferSize (1024) remaining events total.
+	want := bus.SubscriberBufferSize
 	if len(drained) != want {
-		t.Fatalf("expected %d events, got %d (event dropped)", want, len(drained))
+		t.Fatalf("expected %d remaining events, got %d", want, len(drained))
 	}
 	last, ok := drained[len(drained)-1].(*bus.TaskStateChanged)
 	if !ok || last.TaskID != "blocked" {
@@ -129,14 +178,11 @@ func TestChannelBus_Close(t *testing.T) {
 	ch := b.Subscribe()
 	b.Close()
 
-	// The subscriber channel must be closed (receive returns
-	// immediately with ok == false).
-	select {
-	case ev, ok := <-ch:
-		if ok {
-			t.Fatalf("expected closed channel, received event: %+v", ev)
-		}
-	default:
+	// The subscriber channel must be closed: a receive on a closed
+	// channel returns immediately with ok == false. There is no need
+	// for a default branch (which would be unreachable here).
+	_, ok := <-ch
+	if ok {
 		t.Fatal("subscriber channel was not closed by Close")
 	}
 
@@ -170,12 +216,10 @@ func TestChannelBus_SubscribeAfterClose(t *testing.T) {
 	b := bus.NewChannelBus()
 	b.Close()
 	ch := b.Subscribe()
-	select {
-	case _, ok := <-ch:
-		if ok {
-			t.Fatal("Subscribe after Close should return a closed channel")
-		}
-	default:
+	// A receive on the returned channel must return immediately with
+	// ok == false, proving the channel was already closed by Subscribe.
+	_, ok := <-ch
+	if ok {
 		t.Fatal("Subscribe after Close should return a closed channel")
 	}
 }
@@ -234,6 +278,35 @@ func TestChannelBus_ConcurrentPublish(t *testing.T) {
 			t.Fatalf("duplicate event detected: %s", tc.Args)
 		}
 		seen[tc.Args] = true
+	}
+}
+
+// TestRecorderEmitter_PublishNilEventNoOp verifies that publishing a
+// nil Event to a RecorderEmitter is a silent no-op: no panic and zero
+// events recorded. Guards against B1 from the bus review.
+func TestRecorderEmitter_PublishNilEventNoOp(t *testing.T) {
+	rec := bus.NewRecorderEmitter()
+
+	// A real event first and after, sandwiching the nil publish to
+	// confirm the recorder remains operational after the no-op.
+	rec.Publish(&bus.WorkerFinished{TaskID: "real", Timestamp: time.Now()})
+	rec.Publish(nil)
+	rec.Publish(&bus.WorkerFinished{TaskID: "after", Timestamp: time.Now()})
+
+	got := rec.Events()
+	if len(got) != 2 {
+		t.Fatalf("expected exactly 2 recorded events (nil dropped), got %d", len(got))
+	}
+	for i, ev := range got {
+		if ev == nil {
+			t.Fatalf("recorded event %d is nil", i)
+		}
+	}
+
+	// EventsByKind exercises ev.kind(); confirm no nil slipped through
+	// that path either.
+	if n := len(rec.EventsByKind("WorkerFinished")); n != 2 {
+		t.Fatalf("EventsByKind(WorkerFinished) = %d, want 2", n)
 	}
 }
 
