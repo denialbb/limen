@@ -11,10 +11,14 @@ import (
 	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/mattn/go-isatty"
+
 	"github.com/denialbb/limen/internal/bus"
 	"github.com/denialbb/limen/internal/git"
 	"github.com/denialbb/limen/internal/orchestrator"
 	"github.com/denialbb/limen/internal/state"
+	"github.com/denialbb/limen/internal/tui"
 )
 
 // cliRouter is a placeholder router that always proceeds.
@@ -218,15 +222,157 @@ func printUsage() {
 }
 
 // runTUICmd launches the interactive terminal UI.
-// TODO: Implement the Bubble Tea program per .agents/docs/interactive_tui.md.
-//       The TUI will own a bus.ChannelBus, subscribe to it, pass the bus to
-//       NewOrchestrator, and pump events into tea.Msg values for rendering.
-//       For now this is a placeholder so the entry-point contract is in place.
+//
+// The TUI owns a bus.ChannelBus, subscribes to it, passes the bus to
+// NewOrchestrator, and pumps bus.Event values into tea.Msg values for
+// rendering. The orchestrator runs in a goroutine; when it finishes the bus is
+// closed, the TUI's event pump observes the closed channel, auto-switches to
+// the Timeline tab for review, and the user quits with q.
+//
+// If stdout is not a TTY (piped output, CI runners, non-interactive shells),
+// Bubble Tea is skipped and the run-task log-style output path is used
+// instead. This keeps the bare invocation safe for scripts and CI.
 func runTUICmd() {
-	fmt.Fprintln(os.Stderr, "limen: interactive TUI is not yet implemented")
-	fmt.Fprintln(os.Stderr, "See .agents/docs/interactive_tui.md for the design.")
-	fmt.Fprintln(os.Stderr, "Use `limen run-task --task-id <id>` for the one-shot path.")
-	os.Exit(1)
+	tuiFlags := flag.NewFlagSet("tui", flag.ExitOnError)
+	taskID := tuiFlags.String("task-id", "", "The ID of the task to run")
+	dbPath := tuiFlags.String("db-path", "limen.db", "Path to the SQLite database")
+	repoPath := tuiFlags.String("repo-path", ".", "Path to the target git repository")
+
+	if err := tuiFlags.Parse(os.Args[2:]); err != nil {
+		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
+		os.Exit(1)
+	}
+
+	if *taskID == "" {
+		fmt.Fprintf(os.Stderr, "--task-id is required\n")
+		tuiFlags.Usage()
+		os.Exit(1)
+	}
+
+	if !isTTY(os.Stdout.Fd()) {
+		// NOTE: Non-interactive stdout. Fall back to the one-shot log style so
+		// pipes and CI get the same outcome reporting without ANSI pollution.
+		runTaskOneShot(*taskID, *dbPath, *repoPath)
+		return
+	}
+
+	runTaskInteractive(*taskID, *dbPath, *repoPath)
+}
+
+// isTTY reports whether the given file descriptor is an interactive terminal.
+// It explicitly handles the Cygwin terminal case via go-isatty so WSL/MSYS
+// pipes that wrap a real terminal still detect as TTYs.
+func isTTY(fd uintptr) bool {
+	return isatty.IsTerminal(fd) || isatty.IsCygwinTerminal(fd)
+}
+
+// runTaskInteractive runs the orchestrator in a goroutine and renders the
+// Bubble Tea program in the foreground. After the program exits, a single
+// final-state line is printed so scripts that parse the trailing output still
+// get the outcome.
+func runTaskInteractive(taskID, dbPath, repoPath string) {
+	store, err := state.NewSQLiteStore(dbPath)
+	if err != nil {
+		log.Fatalf("Failed to initialize SQLite store: %v", err)
+	}
+	defer store.Close()
+
+	manager := git.NewWorktreeManager(repoPath, "main")
+
+	worktreeRoot, err := filepath.Abs(filepath.Join(repoPath, ".limen", "worktrees"))
+	if err != nil {
+		log.Fatalf("Failed to resolve worktree root: %v", err)
+	}
+
+	eventBus := bus.NewChannelBus()
+	defer eventBus.Close()
+
+	orch := orchestrator.NewOrchestrator(
+		store,
+		eventBus,
+		&cliRouter{},
+		&cliRetriever{},
+		&cliWorker{},
+		&cliValidator{},
+		&cliGit{manager: manager, repoPath: repoPath},
+		worktreeRoot,
+	)
+
+	if _, err := store.CreateTask(taskID, 3); err != nil {
+		log.Printf("Note: failed to create task %s (it may already exist): %v", taskID, err)
+	}
+
+	model := tui.NewModel(taskID, eventBus)
+	ctx := context.Background()
+
+	// NOTE: Orchestrator runs on a goroutine. When RunTask returns, the bus is
+	// closed, the TUI's event pump sees the closed channel, and the user can
+	// review the Timeline tab before quitting with q.
+	go func() {
+		if err := orch.RunTask(ctx, taskID); err != nil {
+			log.Printf("orchestrator: %v", err)
+		}
+		eventBus.Close()
+	}()
+
+	program := tea.NewProgram(model, tea.WithAltScreen())
+	finalModel, err := program.Run()
+	if err != nil {
+		log.Fatalf("TUI exited with error: %v", err)
+	}
+
+	if m, ok := finalModel.(tui.Model); ok {
+		fmt.Fprintln(os.Stdout, m.String())
+	}
+}
+
+// runTaskOneShot is the non-TTY fallback. It reuses the run-task log-style
+// output but still wires the event bus for parity with the interactive path:
+// the orchestrator emits the same structured events; with no subscriber they
+// are simply discarded (Publish fans out to an empty slice).
+func runTaskOneShot(taskID, dbPath, repoPath string) {
+	store, err := state.NewSQLiteStore(dbPath)
+	if err != nil {
+		log.Fatalf("Failed to initialize SQLite store: %v", err)
+	}
+	defer store.Close()
+
+	manager := git.NewWorktreeManager(repoPath, "main")
+
+	worktreeRoot, err := filepath.Abs(filepath.Join(repoPath, ".limen", "worktrees"))
+	if err != nil {
+		log.Fatalf("Failed to resolve worktree root: %v", err)
+	}
+
+	eventBus := bus.NewChannelBus()
+	defer eventBus.Close()
+
+	orch := orchestrator.NewOrchestrator(
+		store,
+		eventBus,
+		&cliRouter{},
+		&cliRetriever{},
+		&cliWorker{},
+		&cliValidator{},
+		&cliGit{manager: manager, repoPath: repoPath},
+		worktreeRoot,
+	)
+
+	if _, err := store.CreateTask(taskID, 3); err != nil {
+		log.Printf("Note: failed to create task %s (it may already exist): %v", taskID, err)
+	}
+
+	log.Printf("Starting task %s", taskID)
+	ctx := context.Background()
+	if err := orch.RunTask(ctx, taskID); err != nil {
+		log.Fatalf("Task failed: %v", err)
+	}
+
+	t, err := store.GetTask(taskID)
+	if err != nil {
+		log.Fatalf("Failed to retrieve completed task: %v", err)
+	}
+	log.Printf("Task completed with state: %s", t.CurrentState)
 }
 
 func runTaskCmd() {
