@@ -105,9 +105,11 @@ func (c *cliGit) GetWorktreeDiff(ctx context.Context, wt *git.Worktree) (string,
 }
 
 func main() {
+	// NOTE: The bare invocation `limen` is the primary human-facing entry point
+	// and launches the interactive TUI by default. See .agents/docs/interactive_tui.md.
 	if len(os.Args) < 2 {
-		printUsage()
-		os.Exit(1)
+		runTUICmd()
+		return
 	}
 
 	command := os.Args[1]
@@ -115,6 +117,10 @@ func main() {
 	switch command {
 	case "run-task":
 		runTaskCmd()
+	case "tui":
+		// NOTE: Explicit alias for the default bare invocation. Kept so that
+		// subcommand-style invocation remains available alongside the simple form.
+		runTUICmd()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", command)
 		printUsage()
@@ -123,9 +129,21 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Fprintf(os.Stderr, "Usage: limen <command> [arguments]\n")
+	fmt.Fprintf(os.Stderr, "Usage: limen [command] [arguments]\n")
 	fmt.Fprintf(os.Stderr, "Commands:\n")
-	fmt.Fprintf(os.Stderr, "  run-task   Run a task through the orchestrator\n")
+	fmt.Fprintf(os.Stderr, "  limen            Launch the interactive TUI (default)\n")
+	fmt.Fprintf(os.Stderr, "  limen tui        Alias for the default interactive TUI\n")
+	fmt.Fprintf(os.Stderr, "  limen run-task   Run a task through the orchestrator (one-shot)\n")
+}
+
+// runTUICmd launches the interactive terminal UI.
+// TODO: Implement the Bubble Tea program per .agents/docs/interactive_tui.md.
+//       For now this is a placeholder so the entry-point contract is in place.
+func runTUICmd() {
+	fmt.Fprintln(os.Stderr, "limen: interactive TUI is not yet implemented")
+	fmt.Fprintln(os.Stderr, "See .agents/docs/interactive_tui.md for the design.")
+	fmt.Fprintln(os.Stderr, "Use `limen run-task --task-id <id>` for the one-shot path.")
+	os.Exit(1)
 }
 
 func runTaskCmd() {
