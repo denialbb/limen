@@ -47,3 +47,9 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+
+# Limen specific
+/limen
+/bin/
+/docs/reviews/
+/.limen/
