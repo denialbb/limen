@@ -17,9 +17,8 @@ import (
 	"github.com/denialbb/limen/internal/state"
 )
 
-// Event is the marker interface implemented by every event in the
-// taxonomy. The unexported kind method returns the event's type name,
-// used for routing and test assertions without relying on reflection.
+// Event is the base interface for all bus events. Implementations use
+// pointer receivers; construct events with & (e.g. &bus.TaskStateChanged{...}).
 type Event interface {
 	kind() string
 }
@@ -27,7 +26,8 @@ type Event interface {
 // EventBus is the subscription-based transport consumed by the TUI.
 type EventBus interface {
 	// Publish delivers an event to every subscriber. Implementations
-	// must not drop events; blocking backpressure is permitted.
+	// must not drop events while the bus is open; blocking backpressure
+	// is permitted.
 	Publish(Event)
 	// Subscribe returns a receive-only channel from which the caller
 	// consumes events. Multiple subscribers are supported; each
@@ -47,10 +47,10 @@ const SubscriberBufferSize = 1024
 // ChannelBus is the in-process, channel-backed EventBus implementation.
 //
 // Backpressure policy: Publish blocks when any subscriber's buffer is
-// full. No events are dropped. In single-task v1 the TUI drains far
-// faster than producers fill, so the block is effectively never hit.
-// This must be revisited for multi-task v2, where fan-out to N slow
-// consumers can stall the producer.
+// full. No events are dropped while the bus is open. In single-task v1
+// the TUI drains far faster than producers fill, so the block is
+// effectively never hit. This must be revisited for multi-task v2,
+// where fan-out to N slow consumers can stall the producer.
 type ChannelBus struct {
 	mu          sync.Mutex
 	subscribers []chan Event

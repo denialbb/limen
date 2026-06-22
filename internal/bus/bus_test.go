@@ -281,6 +281,79 @@ func TestChannelBus_ConcurrentPublish(t *testing.T) {
 	}
 }
 
+// TestChannelBus_ConcurrentPublish_PreservesPublisherOrder verifies that
+// events from a single publisher arrive in publish order even when many
+// publishers publish concurrently to one subscriber.
+func TestChannelBus_ConcurrentPublish_PreservesPublisherOrder(t *testing.T) {
+	b := bus.NewChannelBus()
+	ch := b.Subscribe()
+
+	const publishers = 8
+	const perPublisher = 200
+
+	var wg sync.WaitGroup
+	wg.Add(publishers)
+	for p := 0; p < publishers; p++ {
+		go func(id int) {
+			defer wg.Done()
+			for i := 0; i < perPublisher; i++ {
+				b.Publish(&bus.WorkerToolCall{
+					TaskID:    "concurrent-order",
+					Tool:      "echo",
+					Args:      fmt.Sprintf("p=%d i=%d", id, i),
+					Timestamp: time.Now(),
+				})
+			}
+		}(p)
+	}
+
+	var received []bus.Event
+	collectorDone := make(chan struct{})
+	go func() {
+		for ev := range ch {
+			received = append(received, ev)
+		}
+		close(collectorDone)
+	}()
+
+	wg.Wait()
+	b.Close()
+	<-collectorDone
+
+	want := publishers * perPublisher
+	if len(received) != want {
+		t.Fatalf("expected %d events, got %d", want, len(received))
+	}
+
+	byPublisher := make(map[int][]int, publishers)
+	for _, ev := range received {
+		tc, ok := ev.(*bus.WorkerToolCall)
+		if !ok {
+			t.Fatalf("unexpected event type: %T", ev)
+		}
+		var id, seq int
+		if _, err := fmt.Sscanf(tc.Args, "p=%d i=%d", &id, &seq); err != nil {
+			t.Fatalf("failed to parse publisher key %q: %v", tc.Args, err)
+		}
+		byPublisher[id] = append(byPublisher[id], seq)
+	}
+
+	if len(byPublisher) != publishers {
+		t.Fatalf("expected events from %d publishers, got %d", publishers, len(byPublisher))
+	}
+
+	for id, seqs := range byPublisher {
+		if len(seqs) != perPublisher {
+			t.Fatalf("publisher %d: expected %d events, got %d", id, perPublisher, len(seqs))
+		}
+		for i := 1; i < len(seqs); i++ {
+			if seqs[i] <= seqs[i-1] {
+				t.Fatalf("publisher %d sequence not monotonic at index %d: %d after %d", id, i, seqs[i], seqs[i-1])
+			}
+		}
+	}
+}
+
 // TestRecorderEmitter_PublishNilEventNoOp verifies that publishing a
 // nil Event to a RecorderEmitter is a silent no-op: no panic and zero
 // events recorded. Guards against B1 from the bus review.
