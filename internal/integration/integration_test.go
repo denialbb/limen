@@ -111,7 +111,9 @@ func TestFullOrchestrationCycle(t *testing.T) {
 	gitClient := &dummyGitClient{manager: manager}
 
 	worktreeRoot := t.TempDir()
-	orch := orchestrator.NewOrchestrator(store, bus.NewChannelBus(), router, retriever, worker, validator, gitClient, worktreeRoot)
+	b := bus.NewChannelBus()
+	defer b.Close()
+	orch := orchestrator.NewOrchestrator(store, b, router, retriever, worker, validator, gitClient, worktreeRoot)
 
 	taskID := "task-integration-1"
 	_, err = store.CreateTask(taskID, 3)
@@ -163,7 +165,9 @@ func TestFullOrchestrationCycle_ValidatorRetry(t *testing.T) {
 	gitClient := &dummyGitClient{manager: manager}
 
 	worktreeRoot := t.TempDir()
-	orch := orchestrator.NewOrchestrator(store, bus.NewChannelBus(), router, retriever, worker, validator, gitClient, worktreeRoot)
+	b := bus.NewChannelBus()
+	defer b.Close()
+	orch := orchestrator.NewOrchestrator(store, b, router, retriever, worker, validator, gitClient, worktreeRoot)
 
 	taskID := "task-integration-2"
 	_, err = store.CreateTask(taskID, 2)

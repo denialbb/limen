@@ -332,6 +332,14 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 			if hasConflicts {
 				regions, extractErr := o.git.ExtractConflictRegions(ctx, wt)
 				if extractErr != nil {
+					// NOTE: A conflict was detected but region extraction
+					// failed. Emit ConflictDetected with an empty Regions
+					// slice so the TUI still sees the conflict signal.
+					em.Publish(&bus.ConflictDetected{
+						TaskID:    task.ID,
+						Regions:   nil,
+						Timestamp: time.Now(),
+					})
 					return extractErr
 				}
 				// NOTE: Publish the conflict event immediately so the TUI can
@@ -359,6 +367,12 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 					return err
 				}
 				if err := o.store.IncrementRetry(task.ID); err != nil {
+					return err
+				}
+				// NOTE: Refresh task so the next iteration's worker receives
+				// the authoritative RetryCount after the increment.
+				task, err = o.store.GetTask(task.ID)
+				if err != nil {
 					return err
 				}
 				continue
@@ -403,6 +417,12 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 			return err
 		}
 		if err := o.store.IncrementRetry(task.ID); err != nil {
+			return err
+		}
+		// NOTE: Refresh task so the next iteration's worker receives
+		// the authoritative RetryCount after the increment.
+		task, err = o.store.GetTask(task.ID)
+		if err != nil {
 			return err
 		}
 	}

@@ -235,7 +235,7 @@ func TestRunTask_ValidatorRetry(t *testing.T) {
 	validator := &mockValidator{passes: false} // Will fail validation, trigger retry
 	git := &mockGit{valid: true}
 
-	orch := newTestOrchestrator(store, router, worker, validator, git)
+	orch, rec := newRecordingOrchestrator(store, router, worker, validator, git)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 	err := orch.RunTask(ctx, task.ID)
@@ -251,6 +251,21 @@ func TestRunTask_ValidatorRetry(t *testing.T) {
 
 	if task.CurrentState != state.StateFailedEscalated {
 		t.Errorf("expected state FAILED_ESCALATED, got: %s", task.CurrentState)
+	}
+
+	finals := rec.EventsByKind("TaskFinalized")
+	if len(finals) != 1 {
+		t.Fatalf("expected 1 TaskFinalized event, got %d", len(finals))
+	}
+	f, ok := finals[0].(*bus.TaskFinalized)
+	if !ok {
+		t.Fatalf("expected TaskFinalized, got %T", finals[0])
+	}
+	if f.FinalState != state.StateFailedEscalated {
+		t.Errorf("expected FinalState FAILED_ESCALATED, got %s", f.FinalState)
+	}
+	if f.TaskID != task.ID {
+		t.Errorf("expected TaskID %s, got %s", task.ID, f.TaskID)
 	}
 }
 
@@ -319,7 +334,7 @@ func TestRunTask_RouterExpand(t *testing.T) {
 	validator := &mockValidator{passes: true}
 	git := &mockGit{valid: true}
 
-	orch := newTestOrchestrator(store, router, worker, validator, git)
+	orch, rec := newRecordingOrchestrator(store, router, worker, validator, git)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 	err := orch.RunTask(ctx, task.ID)
@@ -330,6 +345,24 @@ func TestRunTask_RouterExpand(t *testing.T) {
 
 	if task.CurrentState != state.StateFailedEscalated {
 		t.Errorf("expected state FAILED_ESCALATED, got: %s", task.CurrentState)
+	}
+
+	finals := rec.EventsByKind("TaskFinalized")
+	if len(finals) != 1 {
+		t.Fatalf("expected 1 TaskFinalized event, got %d", len(finals))
+	}
+	f, ok := finals[0].(*bus.TaskFinalized)
+	if !ok {
+		t.Fatalf("expected TaskFinalized, got %T", finals[0])
+	}
+	if f.FinalState != state.StateFailedEscalated {
+		t.Errorf("expected FinalState FAILED_ESCALATED, got %s", f.FinalState)
+	}
+	if f.FinalOutputRef != "" {
+		t.Errorf("expected empty FinalOutputRef on expand exhaustion, got %q", f.FinalOutputRef)
+	}
+	if f.TaskID != task.ID {
+		t.Errorf("expected TaskID %s, got %s", task.ID, f.TaskID)
 	}
 }
 
@@ -801,5 +834,63 @@ func TestRunTask_EmitsConflictDetected(t *testing.T) {
 	// should still terminate with a COMMITTED finalize event.
 	if findStateChange(t, rec, state.StateApproved, state.StateCommitted) == nil {
 		t.Error("expected APPROVED->COMMITTED transition after conflict was resolved")
+	}
+}
+
+// mockGitConflictAlways reports a conflict on every CheckForConflicts call and
+// returns a stable conflict region from ExtractConflictRegions. It is used to
+// drive the retry-exhaustion path in the conflict-handling loop.
+type mockGitConflictAlways struct {
+	mockGitBase
+	extractCount int
+}
+
+func (m *mockGitConflictAlways) CheckForConflicts(ctx context.Context, wt *git.Worktree) (bool, error) {
+	return true, nil
+}
+
+func (m *mockGitConflictAlways) ExtractConflictRegions(ctx context.Context, wt *git.Worktree) ([]git.ConflictRegion, error) {
+	m.extractCount++
+	return []git.ConflictRegion{{FilePath: "file.txt"}}, nil
+}
+
+// TestRunTask_EmitsTaskFinalizedOnConflictExhaustion verifies that when a
+// conflict is reported on every pass and retries are exhausted, the task
+// terminates with FAILED_ESCALATED and emits exactly one TaskFinalized event.
+func TestRunTask_EmitsTaskFinalizedOnConflictExhaustion(t *testing.T) {
+	store := &mockStore{tasks: make(map[string]*state.Task)}
+	task, _ := store.CreateTask("task-conflict-exhaust-1", 1)
+
+	router := &mockRouter{decision: orchestrator.DecisionProceed}
+	worker := &mockWorker{}
+	validator := &mockValidator{passes: true}
+	gitClient := &mockGitConflictAlways{mockGitBase: mockGitBase{valid: true}}
+
+	orch, rec := newRecordingOrchestrator(store, router, worker, validator, gitClient)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	err := orch.RunTask(ctx, task.ID)
+	if err == nil {
+		t.Fatal("expected error after conflict retries exhausted, got nil")
+	}
+
+	if task.CurrentState != state.StateFailedEscalated {
+		t.Errorf("expected state FAILED_ESCALATED, got: %s", task.CurrentState)
+	}
+
+	finals := rec.EventsByKind("TaskFinalized")
+	if len(finals) != 1 {
+		t.Fatalf("expected 1 TaskFinalized event, got %d", len(finals))
+	}
+	f, ok := finals[0].(*bus.TaskFinalized)
+	if !ok {
+		t.Fatalf("expected TaskFinalized, got %T", finals[0])
+	}
+	if f.FinalState != state.StateFailedEscalated {
+		t.Errorf("expected FinalState FAILED_ESCALATED, got %s", f.FinalState)
+	}
+	if f.TaskID != task.ID {
+		t.Errorf("expected TaskID %s, got %s", task.ID, f.TaskID)
 	}
 }
