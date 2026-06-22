@@ -54,3 +54,4 @@ venv.bak/
 /docs/reviews/
 /.limen/
 limen.db*
+/sandbox_repo/

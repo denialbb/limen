@@ -132,6 +132,7 @@ func runTaskCmd() {
 	runTaskFlags := flag.NewFlagSet("run-task", flag.ExitOnError)
 	taskID := runTaskFlags.String("task-id", "", "The ID of the task to run")
 	dbPath := runTaskFlags.String("db-path", "limen.db", "Path to the SQLite database")
+	repoPath := runTaskFlags.String("repo-path", ".", "Path to the target git repository")
 
 	if err := runTaskFlags.Parse(os.Args[2:]); err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
@@ -150,10 +151,9 @@ func runTaskCmd() {
 	}
 	defer store.Close()
 
-	repoPath := "."
-	manager := git.NewWorktreeManager(repoPath, "main")
+	manager := git.NewWorktreeManager(*repoPath, "main")
 
-	worktreeRoot, err := filepath.Abs(filepath.Join(".limen", "worktrees"))
+	worktreeRoot, err := filepath.Abs(filepath.Join(*repoPath, ".limen", "worktrees"))
 	if err != nil {
 		log.Fatalf("Failed to resolve worktree root: %v", err)
 	}
@@ -164,7 +164,7 @@ func runTaskCmd() {
 		&cliRetriever{},
 		&cliWorker{},
 		&cliValidator{},
-		&cliGit{manager: manager, repoPath: repoPath},
+		&cliGit{manager: manager, repoPath: *repoPath},
 		worktreeRoot,
 	)
 
