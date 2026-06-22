@@ -61,11 +61,11 @@ func (m *mockStore) IncrementRetry(id string) error {
 	if !ok {
 		return state.ErrTaskNotFound
 	}
-	// NODE: Terminal states may never be retried.
+	// NOTE: Terminal states may never be retried.
 	if t.CurrentState == state.StateFailedEscalated || t.CurrentState == state.StateCommitted {
 		return state.ErrInvalidTransition
 	}
-	// NODE: Retries may only be incremented when the task is in the
+	// NOTE: Retries may only be incremented when the task is in the
 	// RevisionRequested state.
 	if t.CurrentState != state.StateRevisionRequested {
 		return state.ErrInvalidTransition

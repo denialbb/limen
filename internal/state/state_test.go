@@ -156,7 +156,7 @@ func TestIncrementRetry(t *testing.T) {
 	store := newTestStore(t)
 	_, _ = store.CreateTask("task-123", 2)
 
-	// NODE: IncrementRetry requires the task to be in StateRevisionRequested.
+	// NOTE: IncrementRetry requires the task to be in StateRevisionRequested.
 	walkToRevision := func() {
 		mustTransition(t, store, "task-123", state.StateContextBuilding)
 		mustTransition(t, store, "task-123", state.StateRoutingEvaluation)

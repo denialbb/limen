@@ -220,7 +220,7 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 	feedback := ""
 
 	for {
-		// NODE: Check for context cancellation at the top of every retry iteration.
+		// NOTE: Check for context cancellation at the top of every retry iteration.
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

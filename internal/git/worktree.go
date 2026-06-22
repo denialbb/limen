@@ -235,14 +235,14 @@ func parseConflictMarkers(content string) (base, proposed string) {
 		return "", ""
 	}
 	midIdx += start
-	endIdx := strings.Index(content[midIdx+1:], theirs)
+	endIdx := strings.Index(content[midIdx+len(markerMid):], markerEnd)
 	if endIdx == -1 {
 		return "", ""
 	}
-	endIdx += midIdx + 1
+	endIdx += midIdx + len(markerMid)
 
-	base = content[start:midIdx]
-	proposed = content[midIdx+1 : endIdx]
+	base = content[start+len(markerStart):midIdx]
+	proposed = content[midIdx+len(markerMid):endIdx]
 	return base, proposed
 }
 
@@ -308,7 +308,7 @@ func (m *worktreeManagerImpl) DestroyWorktree(ctx context.Context, wt *Worktree)
 	cmd := exec.CommandContext(ctx, "git", "worktree", "remove", "--force", wt.Path)
 	cmd.Dir = m.repoPath
 	if err := cmd.Run(); err != nil {
-		// NODE: log the original error before falling back to manual cleanup + prune
+		// NOTE: log the original error before falling back to manual cleanup + prune
 		if removeErr := os.RemoveAll(wt.Path); removeErr != nil {
 			log.Printf("failed to remove worktree path manually: %v", removeErr)
 		}
