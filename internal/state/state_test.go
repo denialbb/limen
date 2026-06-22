@@ -32,6 +32,38 @@ func TestCreateTask(t *testing.T) {
 	}
 }
 
+func TestCreateTaskAlreadyExists(t *testing.T) {
+	store := state.NewStore()
+	_, _ = store.CreateTask("task-123", 3)
+
+	_, err := store.CreateTask("task-123", 3)
+	if !errors.Is(err, state.ErrTaskAlreadyExists) {
+		t.Errorf("expected ErrTaskAlreadyExists, got: %v", err)
+	}
+}
+
+func TestGetTask(t *testing.T) {
+	store := state.NewStore()
+	_, _ = store.CreateTask("task-123", 3)
+
+	task, err := store.GetTask("task-123")
+	if err != nil {
+		t.Fatalf("expected no error getting task, got: %v", err)
+	}
+
+	if task.ID != "task-123" {
+		t.Errorf("expected ID task-123, got: %s", task.ID)
+	}
+}
+
+func TestGetTaskNotFound(t *testing.T) {
+	store := state.NewStore()
+	_, err := store.GetTask("task-404")
+	if !errors.Is(err, state.ErrTaskNotFound) {
+		t.Errorf("expected ErrTaskNotFound, got: %v", err)
+	}
+}
+
 func TestValidStateTransition(t *testing.T) {
 	store := state.NewStore()
 	_, _ = store.CreateTask("task-123", 3)
@@ -61,8 +93,41 @@ func TestInvalidStateTransition(t *testing.T) {
 		t.Fatal("expected error for invalid transition, got nil")
 	}
 
-	if !errors.Is(err, state.ErrInvalidTransition) && err != state.ErrNotImplemented {
+	if !errors.Is(err, state.ErrInvalidTransition) {
 		t.Errorf("expected ErrInvalidTransition, got: %v", err)
+	}
+}
+
+func TestTransitionTaskNotFound(t *testing.T) {
+	store := state.NewStore()
+	err := store.TransitionState("task-404", state.StateContextBuilding)
+	if !errors.Is(err, state.ErrTaskNotFound) {
+		t.Errorf("expected ErrTaskNotFound, got: %v", err)
+	}
+}
+
+func TestAllValidTransitions(t *testing.T) {
+	store := state.NewStore()
+	id := "task-1"
+	_, _ = store.CreateTask(id, 3)
+
+	transitions := []state.TaskState{
+		state.StateContextBuilding,
+		state.StateRoutingEvaluation,
+		state.StateWorkerRunning,
+		state.StateAwaitingValidation,
+		state.StateRevisionRequested,
+		state.StateWorkerRunning,
+		state.StateAwaitingValidation,
+		state.StateApproved,
+		state.StateCommitted,
+	}
+
+	for _, nextState := range transitions {
+		err := store.TransitionState(id, nextState)
+		if err != nil {
+			t.Fatalf("expected valid transition to %s, got error: %v", nextState, err)
+		}
 	}
 }
 
@@ -88,7 +153,15 @@ func TestIncrementRetry(t *testing.T) {
 		t.Fatal("expected error when exceeding max retries, got nil")
 	}
 
-	if !errors.Is(err, state.ErrMaxRetriesReached) && err != state.ErrNotImplemented {
+	if !errors.Is(err, state.ErrMaxRetriesReached) {
 		t.Errorf("expected ErrMaxRetriesReached, got: %v", err)
+	}
+}
+
+func TestIncrementRetryTaskNotFound(t *testing.T) {
+	store := state.NewStore()
+	err := store.IncrementRetry("task-404")
+	if !errors.Is(err, state.ErrTaskNotFound) {
+		t.Errorf("expected ErrTaskNotFound, got: %v", err)
 	}
 }

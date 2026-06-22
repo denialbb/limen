@@ -1,6 +1,9 @@
 package state
 
-import "errors"
+import (
+	"errors"
+	"sync"
+)
 
 // TaskState represents the lifecycle state of a task in the Limen orchestration engine.
 type TaskState string
@@ -20,7 +23,8 @@ const (
 var (
 	ErrInvalidTransition = errors.New("invalid state transition")
 	ErrMaxRetriesReached = errors.New("maximum retries reached")
-	ErrNotImplemented    = errors.New("not implemented")
+	ErrTaskNotFound      = errors.New("task not found")
+	ErrTaskAlreadyExists = errors.New("task already exists")
 )
 
 // Task represents a unit of work managed by Limen.
@@ -50,26 +54,103 @@ type Store interface {
 	IncrementRetry(id string) error
 }
 
-// StubStore provides a failing stub implementation of the Store interface for TDD.
-type StubStore struct{}
+// MemoryStore provides an in-memory implementation of the Store interface.
+type MemoryStore struct {
+	mu    sync.RWMutex
+	tasks map[string]*Task
+}
 
 // NewStore returns a new Store instance.
 func NewStore() Store {
-	return &StubStore{}
+	return &MemoryStore{
+		tasks: make(map[string]*Task),
+	}
 }
 
-func (s *StubStore) CreateTask(id string, maxRetries int) (*Task, error) {
-	return nil, ErrNotImplemented
+func (s *MemoryStore) CreateTask(id string, maxRetries int) (*Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.tasks[id]; exists {
+		return nil, ErrTaskAlreadyExists
+	}
+
+	task := &Task{
+		ID:           id,
+		CurrentState: StateCreated,
+		RetryCount:   0,
+		MaxRetries:   maxRetries,
+	}
+	s.tasks[id] = task
+	return task, nil
 }
 
-func (s *StubStore) GetTask(id string) (*Task, error) {
-	return nil, ErrNotImplemented
+func (s *MemoryStore) GetTask(id string) (*Task, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	task, exists := s.tasks[id]
+	if !exists {
+		return nil, ErrTaskNotFound
+	}
+	
+	tCopy := *task
+	return &tCopy, nil
 }
 
-func (s *StubStore) TransitionState(id string, newState TaskState) error {
-	return ErrNotImplemented
+func isValidTransition(current, next TaskState) bool {
+	switch current {
+	case StateCreated:
+		return next == StateContextBuilding
+	case StateContextBuilding:
+		return next == StateRoutingEvaluation
+	case StateRoutingEvaluation:
+		return next == StateWorkerRunning
+	case StateWorkerRunning:
+		return next == StateAwaitingValidation
+	case StateAwaitingValidation:
+		return next == StateApproved || next == StateRevisionRequested || next == StateFailedEscalated
+	case StateRevisionRequested:
+		return next == StateWorkerRunning
+	case StateApproved:
+		return next == StateCommitted
+	case StateFailedEscalated, StateCommitted:
+		return false
+	default:
+		return false
+	}
 }
 
-func (s *StubStore) IncrementRetry(id string) error {
-	return ErrNotImplemented
+func (s *MemoryStore) TransitionState(id string, newState TaskState) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	task, exists := s.tasks[id]
+	if !exists {
+		return ErrTaskNotFound
+	}
+
+	if !isValidTransition(task.CurrentState, newState) {
+		return ErrInvalidTransition
+	}
+
+	task.CurrentState = newState
+	return nil
+}
+
+func (s *MemoryStore) IncrementRetry(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	task, exists := s.tasks[id]
+	if !exists {
+		return ErrTaskNotFound
+	}
+
+	if task.RetryCount >= task.MaxRetries {
+		return ErrMaxRetriesReached
+	}
+
+	task.RetryCount++
+	return nil
 }
