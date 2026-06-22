@@ -2,7 +2,6 @@ package state
 
 import (
 	"errors"
-	"sync"
 )
 
 // TaskState represents the lifecycle state of a task in the Limen orchestration engine.
@@ -29,10 +28,13 @@ var (
 
 // Task represents a unit of work managed by Limen.
 type Task struct {
-	ID           string
-	CurrentState TaskState
-	RetryCount   int
-	MaxRetries   int
+	ID                 string
+	CurrentState       TaskState
+	RetryCount         int
+	MaxRetries         int
+	ValidationDecision string
+	FinalOutput        string
+	ContextSnapshot    string
 }
 
 // Store defines the contract for persisting and retrieving task state.
@@ -48,56 +50,25 @@ type Store interface {
 	// It must strictly enforce the Limen Task State Machine invariants.
 	TransitionState(id string, newState TaskState) error
 
-	// IncrementRetry increments the retry counter for the task, 
+	// IncrementRetry increments the retry counter for the task,
 	// enforcing the invariant that REVISION_REQUESTED to WORKER_RUNNING
 	// is gated by the max retry limit.
 	IncrementRetry(id string) error
+
+	// RecordToolCall persists a tool call made while processing the task.
+	RecordToolCall(id, call string) error
+
+	// RecordValidationDecision persists the validation decision and feedback.
+	RecordValidationDecision(id string, pass bool, feedback string) error
+
+	// RecordFinalOutput persists the final output produced for the task.
+	RecordFinalOutput(id, output string) error
+
+	// RecordContextSnapshot persists the context snapshot for the task.
+	RecordContextSnapshot(id string, snapshot string) error
 }
 
-// MemoryStore provides an in-memory implementation of the Store interface.
-type MemoryStore struct {
-	mu    sync.RWMutex
-	tasks map[string]*Task
-}
-
-// NewStore returns a new Store instance.
-func NewStore() Store {
-	return &MemoryStore{
-		tasks: make(map[string]*Task),
-	}
-}
-
-func (s *MemoryStore) CreateTask(id string, maxRetries int) (*Task, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if _, exists := s.tasks[id]; exists {
-		return nil, ErrTaskAlreadyExists
-	}
-
-	task := &Task{
-		ID:           id,
-		CurrentState: StateCreated,
-		RetryCount:   0,
-		MaxRetries:   maxRetries,
-	}
-	s.tasks[id] = task
-	return task, nil
-}
-
-func (s *MemoryStore) GetTask(id string) (*Task, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	task, exists := s.tasks[id]
-	if !exists {
-		return nil, ErrTaskNotFound
-	}
-	
-	tCopy := *task
-	return &tCopy, nil
-}
-
+// isValidTransition encodes the Limen Task State Machine.
 func isValidTransition(current, next TaskState) bool {
 	switch current {
 	case StateCreated:
@@ -105,13 +76,17 @@ func isValidTransition(current, next TaskState) bool {
 	case StateContextBuilding:
 		return next == StateRoutingEvaluation
 	case StateRoutingEvaluation:
-		return next == StateWorkerRunning
+		// NOTE: Allow going back to context building for router Expand
+		// decisions, or straight to escalation for router Escalate decisions.
+		return next == StateWorkerRunning || next == StateContextBuilding || next == StateFailedEscalated
 	case StateWorkerRunning:
 		return next == StateAwaitingValidation
 	case StateAwaitingValidation:
 		return next == StateApproved || next == StateRevisionRequested || next == StateFailedEscalated
 	case StateRevisionRequested:
-		return next == StateWorkerRunning
+		// NOTE: Allow escalation from revision requested if we decide to
+		// abandon retrying (e.g. max retries exhausted).
+		return next == StateWorkerRunning || next == StateFailedEscalated
 	case StateApproved:
 		return next == StateCommitted
 	case StateFailedEscalated, StateCommitted:
@@ -121,36 +96,4 @@ func isValidTransition(current, next TaskState) bool {
 	}
 }
 
-func (s *MemoryStore) TransitionState(id string, newState TaskState) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
-	task, exists := s.tasks[id]
-	if !exists {
-		return ErrTaskNotFound
-	}
-
-	if !isValidTransition(task.CurrentState, newState) {
-		return ErrInvalidTransition
-	}
-
-	task.CurrentState = newState
-	return nil
-}
-
-func (s *MemoryStore) IncrementRetry(id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	task, exists := s.tasks[id]
-	if !exists {
-		return ErrTaskNotFound
-	}
-
-	if task.RetryCount >= task.MaxRetries {
-		return ErrMaxRetriesReached
-	}
-
-	task.RetryCount++
-	return nil
-}
