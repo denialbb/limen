@@ -96,6 +96,10 @@ func (o *StubOrchestrator) RunTask(ctx context.Context, taskID string) error {
 		return ErrGitInvalid
 	}
 
+	if err := o.store.TransitionState(task.ID, state.StateContextBuilding); err != nil {
+		return err
+	}
+
 	if err := o.store.TransitionState(task.ID, state.StateRoutingEvaluation); err != nil {
 		return err
 	}
