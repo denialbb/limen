@@ -9,7 +9,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/denialbb/limen/internal/bus"
 	"github.com/denialbb/limen/internal/git"
 	"github.com/denialbb/limen/internal/orchestrator"
 	"github.com/denialbb/limen/internal/state"
@@ -19,7 +21,23 @@ import (
 // TODO: Replace with the real routing heuristic or LLM evaluator.
 type cliRouter struct{}
 
-func (c *cliRouter) Evaluate(ctx context.Context, task *state.Task) (orchestrator.RouterDecision, error) {
+func (c *cliRouter) Evaluate(ctx context.Context, task *state.Task, em orchestrator.Emitter) (orchestrator.RouterDecision, error) {
+	// NOTE: Synthetic event stream per the v1 de-risking plan: emit the full
+	// Router taxonomy so the TUI has something to render before the real
+	// Python L1 client exists.
+	em.Publish(&bus.RouterExamining{
+		TaskID:         task.ID,
+		ContextExcerpt: "(placeholder context)",
+		Entropy:        0.0,
+		Timestamp:      time.Now(),
+	})
+	em.Publish(&bus.RouterDecisionEvent{
+		TaskID:      task.ID,
+		Decision:    bus.DecisionProceed,
+		Rationale:   "placeholder router always proceeds",
+		ExpandCount: 0,
+		Timestamp:   time.Now(),
+	})
 	return orchestrator.DecisionProceed, nil
 }
 
@@ -27,7 +45,16 @@ func (c *cliRouter) Evaluate(ctx context.Context, task *state.Task) (orchestrato
 // TODO: Replace with the real progressive retrieval pipeline (BM25 + semantic).
 type cliRetriever struct{}
 
-func (c *cliRetriever) Retrieve(ctx context.Context, task *state.Task) (string, error) {
+func (c *cliRetriever) Retrieve(ctx context.Context, task *state.Task, em orchestrator.Emitter) (string, error) {
+	// NOTE: Snapshot size is 0 because the placeholder retriever emits no
+	// manifest yet; the real pipeline will populate this from the assembled
+	// retrieval context.
+	em.Publish(&bus.ContextBuilt{
+		TaskID:       task.ID,
+		SnapshotSize: 0,
+		ManifestRef:  "",
+		Timestamp:    time.Now(),
+	})
 	return "", nil
 }
 
@@ -36,18 +63,72 @@ func (c *cliRetriever) Retrieve(ctx context.Context, task *state.Task) (string, 
 type cliWorker struct{}
 
 // ProduceSolution implements the worker interface.
-func (c *cliWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *git.Worktree, feedback string) error {
+func (c *cliWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *git.Worktree, feedback string, em orchestrator.Emitter) error {
 	log.Printf("Worker producing solution for task %s", task.ID)
+
+	// NOTE: Synthetic Worker taxonomy stream so the TUI shows realistic
+	// activity while the Python L2 client is still a TODO stub.
+	em.Publish(&bus.WorkerStarted{
+		TaskID:       task.ID,
+		WorktreePath: wt.Path,
+		BaseCommit:   wt.BaseCommit,
+		Retry:        task.RetryCount,
+		Timestamp:    time.Now(),
+	})
+	em.Publish(&bus.WorkerToolCall{
+		TaskID:    task.ID,
+		Tool:      "write_file",
+		Args:      "dummy_solution.txt",
+		Timestamp: time.Now(),
+	})
+
 	dummyPath := filepath.Join(wt.Path, "dummy_solution.txt")
-	return os.WriteFile(dummyPath, []byte("Hello from cliWorker"), 0644)
+	if err := os.WriteFile(dummyPath, []byte("Hello from cliWorker"), 0644); err != nil {
+		return err
+	}
+
+	em.Publish(&bus.WorkerFileEdit{
+		TaskID:    task.ID,
+		Path:      "dummy_solution.txt",
+		Op:        "create",
+		DiffHunk:  "Hello from cliWorker",
+		Timestamp: time.Now(),
+	})
+	em.Publish(&bus.WorkerFinished{
+		TaskID:    task.ID,
+		Timestamp: time.Now(),
+	})
+	return nil
 }
 
 // cliValidator is a placeholder validator that always passes.
 // TODO: Replace with the real L3 validator.
 type cliValidator struct{}
 
-func (v *cliValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree) (bool, string, error) {
+func (v *cliValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree, em orchestrator.Emitter) (bool, string, error) {
 	log.Printf("Validator evaluating solution for task %s", task.ID)
+
+	criteria := []string{"placeholder_criterion"}
+	// NOTE: Synthetic Validator taxonomy stream; the per-criterion result and
+	// overall verdict are emitted to give the TUI something concrete to render.
+	em.Publish(&bus.ValidatorExamining{
+		TaskID:    task.ID,
+		Criteria:  criteria,
+		Timestamp: time.Now(),
+	})
+	em.Publish(&bus.ValidatorCriterionResult{
+		TaskID:    task.ID,
+		Criterion: "placeholder_criterion",
+		Passed:    true,
+		Detail:    "placeholder validator always passes",
+		Timestamp: time.Now(),
+	})
+	em.Publish(&bus.ValidatorVerdict{
+		TaskID:    task.ID,
+		Passes:    true,
+		Feedback:  "LGTM",
+		Timestamp: time.Now(),
+	})
 	return true, "LGTM", nil
 }
 
@@ -138,6 +219,8 @@ func printUsage() {
 
 // runTUICmd launches the interactive terminal UI.
 // TODO: Implement the Bubble Tea program per .agents/docs/interactive_tui.md.
+//       The TUI will own a bus.ChannelBus, subscribe to it, pass the bus to
+//       NewOrchestrator, and pump events into tea.Msg values for rendering.
 //       For now this is a placeholder so the entry-point contract is in place.
 func runTUICmd() {
 	fmt.Fprintln(os.Stderr, "limen: interactive TUI is not yet implemented")
@@ -176,8 +259,20 @@ func runTaskCmd() {
 		log.Fatalf("Failed to resolve worktree root: %v", err)
 	}
 
+	// NOTE: run-task is one-shot scripting mode. There is no TUI subscriber, so
+	// a fresh ChannelBus with no subscribers discards every published event
+	// (Publish fans out to an empty subscriber slice and returns immediately,
+	// without blocking). The bus is still threaded through the orchestrator
+	// so the synthetic events from the CLI stubs are produced on the canonical
+	// transport and a future TTY-aware mode can subscribe without recompiling.
+	// TODO: For the bare `limen` invocation, runTUICmd will wire a real
+	// subscriber and tea.Program per .agents/docs/interactive_tui.md.
+	eventBus := bus.NewChannelBus()
+	defer eventBus.Close()
+
 	orch := orchestrator.NewOrchestrator(
 		store,
+		eventBus,
 		&cliRouter{},
 		&cliRetriever{},
 		&cliWorker{},

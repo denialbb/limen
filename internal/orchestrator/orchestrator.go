@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"time"
 
+	"github.com/denialbb/limen/internal/bus"
 	"github.com/denialbb/limen/internal/git"
 	"github.com/denialbb/limen/internal/state"
 )
@@ -35,25 +37,30 @@ const maxExpandIterations = 5
 
 var taskIDSafeRegex = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
+// Emitter is the narrow interface passed to cognitive components so they can
+// publish structured events to the event bus without depending on the full
+// EventBus interface. It is an alias for bus.EventSink.
+type Emitter = bus.EventSink
+
 // Router evaluates the task and context entropy.
 type Router interface {
-	Evaluate(ctx context.Context, task *state.Task) (RouterDecision, error)
+	Evaluate(ctx context.Context, task *state.Task, em Emitter) (RouterDecision, error)
 }
 
 // Retriever builds the ephemeral retrieval context for a task.
 type Retriever interface {
-	Retrieve(ctx context.Context, task *state.Task) (string, error)
+	Retrieve(ctx context.Context, task *state.Task, em Emitter) (string, error)
 }
 
 // Worker is responsible for generating candidate solutions in an isolated worktree.
 type Worker interface {
-	ProduceSolution(ctx context.Context, task *state.Task, wt *git.Worktree, feedback string) error
+	ProduceSolution(ctx context.Context, task *state.Task, wt *git.Worktree, feedback string, em Emitter) error
 }
 
 // Validator evaluates the correctness of the candidate solution.
 type Validator interface {
 	// Evaluate returns a boolean indicating if the solution passed, and feedback if not.
-	Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree) (bool, string, error)
+	Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree, em Emitter) (bool, string, error)
 }
 
 // GitClient handles physical layer operations like validating the repository, committing,
@@ -92,21 +99,28 @@ type Orchestrator interface {
 
 // OrchestratorImpl provides a concrete implementation of Orchestrator.
 type OrchestratorImpl struct {
-	store       state.Store
-	router      Router
-	retriever   Retriever
-	worker      Worker
-	validator   Validator
-	git         GitClient
+	store        state.Store
+	bus          bus.EventBus
+	router       Router
+	retriever    Retriever
+	worker       Worker
+	validator    Validator
+	git          GitClient
 	worktreeRoot string
 }
 
 // NewOrchestrator returns a new instance of Orchestrator.
 // worktreeRoot must be an absolute path; it is the parent directory for all
 // ephemeral task worktrees.
-func NewOrchestrator(store state.Store, router Router, retriever Retriever, worker Worker, validator Validator, git GitClient, worktreeRoot string) Orchestrator {
+//
+// The bus parameter is the EventBus through which the orchestrator publishes
+// TaskStateChanged, ConflictDetected, and TaskFinalized events. It is also
+// passed to each cognitive component as their Emitter (EventBus is a superset
+// of EventSink), so components share the same transport as the orchestrator.
+func NewOrchestrator(store state.Store, bus bus.EventBus, router Router, retriever Retriever, worker Worker, validator Validator, git GitClient, worktreeRoot string) Orchestrator {
 	return &OrchestratorImpl{
 		store:        store,
+		bus:          bus,
 		router:       router,
 		retriever:    retriever,
 		worker:       worker,
@@ -122,11 +136,57 @@ func (o *OrchestratorImpl) recordToolCall(taskID, tool string) {
 	_ = o.store.RecordToolCall(taskID, tool)
 }
 
+// emitter returns the EventSink used to publish events. The stored EventBus
+// itself satisfies EventSink (it has Publish), so it is returned directly.
+// Centralizing this keeps the wiring seam explicit for a future RedisBus swap.
+func (o *OrchestratorImpl) emitter() Emitter {
+	return o.bus
+}
+
+// transitionAndEmit performs a state transition and publishes a TaskStateChanged
+// event capturing the from/to states. It refreshes the task from the store to
+// read the authoritative current state before transitioning.
+func (o *OrchestratorImpl) transitionAndEmit(taskID string, to state.TaskState, em Emitter) error {
+	current, err := o.store.GetTask(taskID)
+	if err != nil {
+		return err
+	}
+	from := current.CurrentState
+	if err := o.store.TransitionState(taskID, to); err != nil {
+		return err
+	}
+	em.Publish(&bus.TaskStateChanged{
+		From:      from,
+		To:        to,
+		TaskID:    taskID,
+		Timestamp: time.Now(),
+	})
+	return nil
+}
+
+// finalizeAndEmit transitions the task to a terminal state and publishes a
+// TaskFinalized event with the final output reference (non-empty only on the
+// COMMITTED path).
+func (o *OrchestratorImpl) finalizeAndEmit(taskID string, to state.TaskState, finalOutputRef string, em Emitter) error {
+	if err := o.transitionAndEmit(taskID, to, em); err != nil {
+		return err
+	}
+	em.Publish(&bus.TaskFinalized{
+		TaskID:         taskID,
+		FinalState:     to,
+		FinalOutputRef: finalOutputRef,
+		Timestamp:      time.Now(),
+	})
+	return nil
+}
+
 // RunTask executes the pipeline for a given task.
 func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 	if !taskIDSafeRegex.MatchString(taskID) {
 		return ErrInvalidTaskID
 	}
+
+	em := o.emitter()
 
 	task, err := o.store.GetTask(taskID)
 	if err != nil {
@@ -149,11 +209,11 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 		default:
 		}
 
-		if err := o.store.TransitionState(task.ID, state.StateContextBuilding); err != nil {
+		if err := o.transitionAndEmit(task.ID, state.StateContextBuilding, em); err != nil {
 			return err
 		}
 
-		contextSnapshot, err := o.retriever.Retrieve(ctx, task)
+		contextSnapshot, err := o.retriever.Retrieve(ctx, task, em)
 		if err != nil {
 			return err
 		}
@@ -168,26 +228,26 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 			return err
 		}
 
-		if err := o.store.TransitionState(task.ID, state.StateRoutingEvaluation); err != nil {
+		if err := o.transitionAndEmit(task.ID, state.StateRoutingEvaluation, em); err != nil {
 			return err
 		}
 
 		o.recordToolCall(task.ID, "router.Evaluate")
-		decision, err := o.router.Evaluate(ctx, task)
+		decision, err := o.router.Evaluate(ctx, task, em)
 		if err != nil {
 			return err
 		}
 
 		switch decision {
 		case DecisionEscalate:
-			if err := o.store.TransitionState(task.ID, state.StateFailedEscalated); err != nil {
+			if err := o.finalizeAndEmit(task.ID, state.StateFailedEscalated, "", em); err != nil {
 				return err
 			}
 			return ErrUnresolvableEntropy
 		case DecisionExpand:
 			expandCount++
 			if expandCount > maxExpandIterations {
-				if err := o.store.TransitionState(task.ID, state.StateFailedEscalated); err != nil {
+				if err := o.finalizeAndEmit(task.ID, state.StateFailedEscalated, "", em); err != nil {
 					return err
 				}
 				return ErrUnresolvableEntropy
@@ -227,12 +287,12 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 		default:
 		}
 
-		if err := o.store.TransitionState(task.ID, state.StateWorkerRunning); err != nil {
+		if err := o.transitionAndEmit(task.ID, state.StateWorkerRunning, em); err != nil {
 			return err
 		}
 
 		o.recordToolCall(task.ID, "worker.ProduceSolution")
-		if err := o.worker.ProduceSolution(ctx, task, wt, feedback); err != nil {
+		if err := o.worker.ProduceSolution(ctx, task, wt, feedback, em); err != nil {
 			return err
 		}
 
@@ -242,12 +302,12 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 		default:
 		}
 
-		if err := o.store.TransitionState(task.ID, state.StateAwaitingValidation); err != nil {
+		if err := o.transitionAndEmit(task.ID, state.StateAwaitingValidation, em); err != nil {
 			return err
 		}
 
 		o.recordToolCall(task.ID, "validator.Evaluate")
-		passes, validationFeedback, err := o.validator.Evaluate(ctx, task, wt)
+		passes, validationFeedback, err := o.validator.Evaluate(ctx, task, wt, em)
 		if err != nil {
 			return err
 		}
@@ -274,6 +334,14 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 				if extractErr != nil {
 					return extractErr
 				}
+				// NOTE: Publish the conflict event immediately so the TUI can
+				// surface the conflict regions before the retry/escalation
+				// decision is made.
+				em.Publish(&bus.ConflictDetected{
+					TaskID:    task.ID,
+					Regions:   regions,
+					Timestamp: time.Now(),
+				})
 				feedback = fmt.Sprintf("Conflicts detected: %+v", regions)
 
 				task, err = o.store.GetTask(task.ID)
@@ -281,13 +349,13 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 					return err
 				}
 				if task.RetryCount >= task.MaxRetries {
-					if err := o.store.TransitionState(task.ID, state.StateFailedEscalated); err != nil {
+					if err := o.finalizeAndEmit(task.ID, state.StateFailedEscalated, "", em); err != nil {
 						return err
 					}
 					return errors.New("worktree has conflicts and max retries reached")
 				}
 
-				if err := o.store.TransitionState(task.ID, state.StateRevisionRequested); err != nil {
+				if err := o.transitionAndEmit(task.ID, state.StateRevisionRequested, em); err != nil {
 					return err
 				}
 				if err := o.store.IncrementRetry(task.ID); err != nil {
@@ -296,7 +364,7 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 				continue
 			}
 
-			if err := o.store.TransitionState(task.ID, state.StateApproved); err != nil {
+			if err := o.transitionAndEmit(task.ID, state.StateApproved, em); err != nil {
 				return err
 			}
 
@@ -311,7 +379,13 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 			if err := o.store.RecordFinalOutput(task.ID, finalOutput); err != nil {
 				return err
 			}
-			return o.store.TransitionState(task.ID, state.StateCommitted)
+			// NOTE: Final transition to COMMITTED plus the finalize event are
+			// emitted together via finalizeAndEmit; the finalOutput is the diff
+			// reference surfaced to the TUI footer on completion.
+			if err := o.finalizeAndEmit(task.ID, state.StateCommitted, finalOutput, em); err != nil {
+				return err
+			}
+			return nil
 		}
 
 		task, err = o.store.GetTask(task.ID)
@@ -319,13 +393,13 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 			return err
 		}
 		if task.RetryCount >= task.MaxRetries {
-			if err := o.store.TransitionState(task.ID, state.StateFailedEscalated); err != nil {
+			if err := o.finalizeAndEmit(task.ID, state.StateFailedEscalated, "", em); err != nil {
 				return err
 			}
 			return ErrValidationFailed
 		}
 
-		if err := o.store.TransitionState(task.ID, state.StateRevisionRequested); err != nil {
+		if err := o.transitionAndEmit(task.ID, state.StateRevisionRequested, em); err != nil {
 			return err
 		}
 		if err := o.store.IncrementRetry(task.ID); err != nil {

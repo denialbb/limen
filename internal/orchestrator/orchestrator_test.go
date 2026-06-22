@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denialbb/limen/internal/bus"
 	"github.com/denialbb/limen/internal/git"
 	"github.com/denialbb/limen/internal/orchestrator"
 	"github.com/denialbb/limen/internal/state"
@@ -98,13 +99,13 @@ type mockRouter struct {
 	decision orchestrator.RouterDecision
 }
 
-func (m *mockRouter) Evaluate(ctx context.Context, task *state.Task) (orchestrator.RouterDecision, error) {
+func (m *mockRouter) Evaluate(ctx context.Context, task *state.Task, em orchestrator.Emitter) (orchestrator.RouterDecision, error) {
 	return m.decision, nil
 }
 
 type mockRetriever struct{}
 
-func (m *mockRetriever) Retrieve(ctx context.Context, task *state.Task) (string, error) {
+func (m *mockRetriever) Retrieve(ctx context.Context, task *state.Task, em orchestrator.Emitter) (string, error) {
 	return "mock-context", nil
 }
 
@@ -112,7 +113,7 @@ type mockWorker struct {
 	called bool
 }
 
-func (m *mockWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *git.Worktree, feedback string) error {
+func (m *mockWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *git.Worktree, feedback string, em orchestrator.Emitter) error {
 	m.called = true
 	return nil
 }
@@ -121,7 +122,7 @@ type mockValidator struct {
 	passes bool
 }
 
-func (m *mockValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree) (bool, string, error) {
+func (m *mockValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree, em orchestrator.Emitter) (bool, string, error) {
 	return m.passes, "feedback", nil
 }
 
@@ -158,7 +159,14 @@ func (m *mockGit) GetWorktreeDiff(ctx context.Context, wt *git.Worktree) (string
 }
 
 func newTestOrchestrator(store state.Store, router orchestrator.Router, worker orchestrator.Worker, validator orchestrator.Validator, gitClient orchestrator.GitClient) orchestrator.Orchestrator {
-	return orchestrator.NewOrchestrator(store, router, &mockRetriever{}, worker, validator, gitClient, worktreeRoot())
+	return newTestOrchestratorWithBus(store, bus.NewChannelBus(), router, worker, validator, gitClient)
+}
+
+// newTestOrchestratorWithBus constructs an orchestrator wired to a caller-
+// supplied bus, so tests that assert on emitted events can subscribe or
+// inspect the stream.
+func newTestOrchestratorWithBus(store state.Store, b bus.EventBus, router orchestrator.Router, worker orchestrator.Worker, validator orchestrator.Validator, gitClient orchestrator.GitClient) orchestrator.Orchestrator {
+	return orchestrator.NewOrchestrator(store, b, router, &mockRetriever{}, worker, validator, gitClient, worktreeRoot())
 }
 
 func worktreeRoot() string {
@@ -343,7 +351,7 @@ func TestRunTask_InvalidTaskID(t *testing.T) {
 
 type mockErrorWorker struct{}
 
-func (m *mockErrorWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *git.Worktree, feedback string) error {
+func (m *mockErrorWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *git.Worktree, feedback string, em orchestrator.Emitter) error {
 	return errMockWorker
 }
 
@@ -476,7 +484,7 @@ func (m *mockGitCommitError) CommitWorktree(ctx context.Context, taskID string, 
 
 type mockErrorRouter struct{}
 
-func (m *mockErrorRouter) Evaluate(ctx context.Context, task *state.Task) (orchestrator.RouterDecision, error) {
+func (m *mockErrorRouter) Evaluate(ctx context.Context, task *state.Task, em orchestrator.Emitter) (orchestrator.RouterDecision, error) {
 	return orchestrator.DecisionProceed, errMockRouter
 }
 
@@ -485,7 +493,7 @@ var _ orchestrator.Router = (*mockErrorRouter)(nil)
 
 type mockErrorValidator struct{}
 
-func (m *mockErrorValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree) (bool, string, error) {
+func (m *mockErrorValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree, em orchestrator.Emitter) (bool, string, error) {
 	return false, "", errMockValidator
 }
 
@@ -519,7 +527,7 @@ type mockWorkerCancel struct {
 	cancelFunc context.CancelFunc
 }
 
-func (m *mockWorkerCancel) ProduceSolution(ctx context.Context, task *state.Task, wt *git.Worktree, feedback string) error {
+func (m *mockWorkerCancel) ProduceSolution(ctx context.Context, task *state.Task, wt *git.Worktree, feedback string, em orchestrator.Emitter) error {
 	m.cancelFunc()
 	return nil
 }
@@ -583,4 +591,215 @@ func (m *mockGitConflict) CheckForConflicts(ctx context.Context, wt *git.Worktre
 func (m *mockGitConflict) ExtractConflictRegions(ctx context.Context, wt *git.Worktree) ([]git.ConflictRegion, error) {
 	m.extractCount++
 	return []git.ConflictRegion{{FilePath: "file.txt"}}, nil
+}
+
+// recorderBus is an EventBus adapter that records every published event into
+// a bus.RecorderEmitter. It is used by event-assertion tests that need to
+// inspect the published stream without spawning a subscriber goroutine.
+// Subscribe returns an already-closed channel so the EventBus contract is
+// satisfied without a real consumer.
+type recorderBus struct {
+	rec *bus.RecorderEmitter
+}
+
+func (r *recorderBus) Publish(ev bus.Event)        { r.rec.Publish(ev) }
+func (r *recorderBus) Subscribe() <-chan bus.Event { ch := make(chan bus.Event); close(ch); return ch }
+func (r *recorderBus) Close()                      {}
+
+// Compile-time check that recorderBus satisfies bus.EventBus.
+var _ bus.EventBus = (*recorderBus)(nil)
+
+// newRecordingOrchestrator wires an orchestrator to a recorderBus and returns
+// both the orchestrator and the underlying recorder for assertions.
+func newRecordingOrchestrator(store state.Store, router orchestrator.Router, worker orchestrator.Worker, validator orchestrator.Validator, gitClient orchestrator.GitClient) (orchestrator.Orchestrator, *bus.RecorderEmitter) {
+	rec := bus.NewRecorderEmitter()
+	b := &recorderBus{rec: rec}
+	return newTestOrchestratorWithBus(store, b, router, worker, validator, gitClient), rec
+}
+
+// findStateChange returns the TaskStateChanged event with the given from/to
+// pair, or nil if none was emitted. It scans the recorder's events directly so
+// the assertion is exact rather than substring-based.
+func findStateChange(t *testing.T, rec *bus.RecorderEmitter, from, to state.TaskState) *bus.TaskStateChanged {
+	t.Helper()
+	for _, ev := range rec.Events() {
+		sc, ok := ev.(*bus.TaskStateChanged)
+		if !ok {
+			continue
+		}
+		if sc.From == from && sc.To == to {
+			return sc
+		}
+	}
+	return nil
+}
+
+// TestRunTask_EmitsTaskStateChanged verifies that the orchestrator emits a
+// TaskStateChanged event for the CREATED -> CONTEXT_BUILDING -> ROUTING_EVAL
+// -> WORKER_RUNNING -> AWAITING_VALIDATION -> APPROVED -> COMMITTED happy
+// path. Each transition must publish exactly one event with the right pair.
+func TestRunTask_EmitsTaskStateChanged(t *testing.T) {
+	store := &mockStore{tasks: make(map[string]*state.Task)}
+	task, _ := store.CreateTask("task-events-1", 3)
+
+	router := &mockRouter{decision: orchestrator.DecisionProceed}
+	worker := &mockWorker{}
+	validator := &mockValidator{passes: true}
+	gitClient := &mockGit{valid: true}
+
+	orch, rec := newRecordingOrchestrator(store, router, worker, validator, gitClient)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	if err := orch.RunTask(ctx, task.ID); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	expected := []struct{ from, to state.TaskState }{
+		{state.StateCreated, state.StateContextBuilding},
+		{state.StateContextBuilding, state.StateRoutingEvaluation},
+		{state.StateRoutingEvaluation, state.StateWorkerRunning},
+		{state.StateWorkerRunning, state.StateAwaitingValidation},
+		{state.StateAwaitingValidation, state.StateApproved},
+		{state.StateApproved, state.StateCommitted},
+	}
+	changes := rec.EventsByKind("TaskStateChanged")
+	if len(changes) != len(expected) {
+		t.Fatalf("expected %d TaskStateChanged events, got %d", len(expected), len(changes))
+	}
+	for i, want := range expected {
+		sc, ok := changes[i].(*bus.TaskStateChanged)
+		if !ok {
+			t.Fatalf("event %d: expected TaskStateChanged, got %T", i, changes[i])
+		}
+		if sc.From != want.from || sc.To != want.to {
+			t.Errorf("event %d: expected %s->%s, got %s->%s",
+				i, want.from, want.to, sc.From, sc.To)
+		}
+		if sc.TaskID != task.ID {
+			t.Errorf("event %d: expected TaskID %s, got %s", i, task.ID, sc.TaskID)
+		}
+		if sc.Timestamp.IsZero() {
+			t.Errorf("event %d: expected non-zero timestamp", i)
+		}
+	}
+}
+
+// TestRunTask_EmitsTaskFinalizedOnCommitted verifies that the COMMITTED
+// terminal state emits exactly one TaskFinalized event carrying the diff
+// reference recorded as the final output.
+func TestRunTask_EmitsTaskFinalizedOnCommitted(t *testing.T) {
+	store := &mockStore{tasks: make(map[string]*state.Task)}
+	task, _ := store.CreateTask("task-finalized-1", 3)
+
+	router := &mockRouter{decision: orchestrator.DecisionProceed}
+	worker := &mockWorker{}
+	validator := &mockValidator{passes: true}
+	gitClient := &mockGit{valid: true}
+
+	orch, rec := newRecordingOrchestrator(store, router, worker, validator, gitClient)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	if err := orch.RunTask(ctx, task.ID); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	finals := rec.EventsByKind("TaskFinalized")
+	if len(finals) != 1 {
+		t.Fatalf("expected 1 TaskFinalized event, got %d", len(finals))
+	}
+	f, ok := finals[0].(*bus.TaskFinalized)
+	if !ok {
+		t.Fatalf("expected TaskFinalized, got %T", finals[0])
+	}
+	if f.FinalState != state.StateCommitted {
+		t.Errorf("expected FinalState COMMITTED, got %s", f.FinalState)
+	}
+	if f.FinalOutputRef == "" {
+		t.Error("expected non-empty FinalOutputRef (the committed diff)")
+	}
+	if f.TaskID != task.ID {
+		t.Errorf("expected TaskID %s, got %s", task.ID, f.TaskID)
+	}
+}
+
+// TestRunTask_EmitsTaskFinalizedOnEscalation verifies that the FAILED_ESCALATED
+// terminal state (via router Escalate) emits exactly one TaskFinalized event
+// with an empty FinalOutputRef.
+func TestRunTask_EmitsTaskFinalizedOnEscalation(t *testing.T) {
+	store := &mockStore{tasks: make(map[string]*state.Task)}
+	task, _ := store.CreateTask("task-finalized-2", 3)
+
+	router := &mockRouter{decision: orchestrator.DecisionEscalate}
+	worker := &mockWorker{}
+	validator := &mockValidator{passes: true}
+	gitClient := &mockGit{valid: true}
+
+	orch, rec := newRecordingOrchestrator(store, router, worker, validator, gitClient)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	_ = orch.RunTask(ctx, task.ID)
+
+	finals := rec.EventsByKind("TaskFinalized")
+	if len(finals) != 1 {
+		t.Fatalf("expected 1 TaskFinalized event, got %d", len(finals))
+	}
+	f, ok := finals[0].(*bus.TaskFinalized)
+	if !ok {
+		t.Fatalf("expected TaskFinalized, got %T", finals[0])
+	}
+	if f.FinalState != state.StateFailedEscalated {
+		t.Errorf("expected FinalState FAILED_ESCALATED, got %s", f.FinalState)
+	}
+	if f.FinalOutputRef != "" {
+		t.Errorf("expected empty FinalOutputRef on escalation, got %q", f.FinalOutputRef)
+	}
+}
+
+// TestRunTask_EmitsConflictDetected verifies that the orchestrator publishes a
+// ConflictDetected event carrying the extracted conflict regions when the git
+// layer reports a conflict, and that the loop still completes to COMMITTED
+// after the conflict is resolved on the retry.
+func TestRunTask_EmitsConflictDetected(t *testing.T) {
+	store := &mockStore{tasks: make(map[string]*state.Task)}
+	task, _ := store.CreateTask("task-conflict-1", 3)
+
+	router := &mockRouter{decision: orchestrator.DecisionProceed}
+	worker := &mockWorker{}
+	validator := &mockValidator{passes: true}
+	gitClient := &mockGitConflict{mockGitBase: mockGitBase{valid: true}}
+
+	orch, rec := newRecordingOrchestrator(store, router, worker, validator, gitClient)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	if err := orch.RunTask(ctx, task.ID); err != nil {
+		t.Fatalf("expected nil, got: %v", err)
+	}
+
+	conflicts := rec.EventsByKind("ConflictDetected")
+	if len(conflicts) != 1 {
+		t.Fatalf("expected 1 ConflictDetected event, got %d", len(conflicts))
+	}
+	c, ok := conflicts[0].(*bus.ConflictDetected)
+	if !ok {
+		t.Fatalf("expected ConflictDetected, got %T", conflicts[0])
+	}
+	if c.TaskID != task.ID {
+		t.Errorf("expected TaskID %s, got %s", task.ID, c.TaskID)
+	}
+	if len(c.Regions) != 1 || c.Regions[0].FilePath != "file.txt" {
+		t.Errorf("expected 1 region at file.txt, got %+v", c.Regions)
+	}
+	if c.Timestamp.IsZero() {
+		t.Error("expected non-zero timestamp")
+	}
+
+	// The escalation path on conflict exhaustion must not fire here; the loop
+	// should still terminate with a COMMITTED finalize event.
+	if findStateChange(t, rec, state.StateApproved, state.StateCommitted) == nil {
+		t.Error("expected APPROVED->COMMITTED transition after conflict was resolved")
+	}
 }

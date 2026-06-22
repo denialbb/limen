@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/denialbb/limen/internal/bus"
 	"github.com/denialbb/limen/internal/git"
 	"github.com/denialbb/limen/internal/orchestrator"
 	"github.com/denialbb/limen/internal/state"
@@ -32,13 +33,13 @@ func setupTestRepo(t *testing.T) string {
 
 type dummyRouter struct{}
 
-func (r *dummyRouter) Evaluate(ctx context.Context, task *state.Task) (orchestrator.RouterDecision, error) {
+func (r *dummyRouter) Evaluate(ctx context.Context, task *state.Task, em orchestrator.Emitter) (orchestrator.RouterDecision, error) {
 	return orchestrator.DecisionProceed, nil
 }
 
 type dummyRetriever struct{}
 
-func (r *dummyRetriever) Retrieve(ctx context.Context, task *state.Task) (string, error) {
+func (r *dummyRetriever) Retrieve(ctx context.Context, task *state.Task, em orchestrator.Emitter) (string, error) {
 	return "dummy-context", nil
 }
 
@@ -46,7 +47,7 @@ type dummyWorker struct {
 	callCount int
 }
 
-func (w *dummyWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *git.Worktree, feedback string) error {
+func (w *dummyWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *git.Worktree, feedback string, em orchestrator.Emitter) error {
 	w.callCount++
 	// NOTE: Under the No Git Noise contract, the worker edits files but does not
 	// commit. The worktree manager captures the uncommitted diff.
@@ -57,7 +58,7 @@ type dummyValidator struct {
 	passes bool
 }
 
-func (v *dummyValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree) (bool, string, error) {
+func (v *dummyValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree, em orchestrator.Emitter) (bool, string, error) {
 	return v.passes, "feedback", nil
 }
 
@@ -110,7 +111,7 @@ func TestFullOrchestrationCycle(t *testing.T) {
 	gitClient := &dummyGitClient{manager: manager}
 
 	worktreeRoot := t.TempDir()
-	orch := orchestrator.NewOrchestrator(store, router, retriever, worker, validator, gitClient, worktreeRoot)
+	orch := orchestrator.NewOrchestrator(store, bus.NewChannelBus(), router, retriever, worker, validator, gitClient, worktreeRoot)
 
 	taskID := "task-integration-1"
 	_, err = store.CreateTask(taskID, 3)
@@ -162,7 +163,7 @@ func TestFullOrchestrationCycle_ValidatorRetry(t *testing.T) {
 	gitClient := &dummyGitClient{manager: manager}
 
 	worktreeRoot := t.TempDir()
-	orch := orchestrator.NewOrchestrator(store, router, retriever, worker, validator, gitClient, worktreeRoot)
+	orch := orchestrator.NewOrchestrator(store, bus.NewChannelBus(), router, retriever, worker, validator, gitClient, worktreeRoot)
 
 	taskID := "task-integration-2"
 	_, err = store.CreateTask(taskID, 2)
