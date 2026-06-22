@@ -81,7 +81,80 @@ func NewOrchestrator(store state.Store, router Router, worker Worker, validator 
 	}
 }
 
-// RunTask is a stub that currently returns ErrNotImplemented.
+// RunTask executes the pipeline for a given task.
 func (o *StubOrchestrator) RunTask(ctx context.Context, taskID string) error {
-	return ErrNotImplemented
+	task, err := o.store.GetTask(taskID)
+	if err != nil {
+		return err
+	}
+
+	valid, err := o.git.IsValid(ctx)
+	if err != nil {
+		return err
+	}
+	if !valid {
+		return ErrGitInvalid
+	}
+
+	if err := o.store.TransitionState(task.ID, state.StateRoutingEvaluation); err != nil {
+		return err
+	}
+
+	decision, err := o.router.Evaluate(ctx, task)
+	if err != nil {
+		return err
+	}
+
+	switch decision {
+	case DecisionEscalate:
+		_ = o.store.TransitionState(task.ID, state.StateFailedEscalated)
+		return ErrUnresolvableEntropy
+	case DecisionExpand:
+		return ErrNotImplemented
+	case DecisionProceed:
+		// continue
+	default:
+		return errors.New("unknown routing decision")
+	}
+
+	for {
+		if err := o.store.TransitionState(task.ID, state.StateWorkerRunning); err != nil {
+			return err
+		}
+
+		if err := o.worker.ProduceSolution(ctx, task); err != nil {
+			return err
+		}
+
+		if err := o.store.TransitionState(task.ID, state.StateAwaitingValidation); err != nil {
+			return err
+		}
+
+		passes, _, err := o.validator.Evaluate(ctx, task)
+		if err != nil {
+			return err
+		}
+
+		if passes {
+			if err := o.store.TransitionState(task.ID, state.StateApproved); err != nil {
+				return err
+			}
+			if err := o.git.CommitWorktree(ctx, task.ID); err != nil {
+				return err
+			}
+			return o.store.TransitionState(task.ID, state.StateCommitted)
+		}
+
+		if err := o.store.IncrementRetry(task.ID); err != nil {
+			if errors.Is(err, state.ErrMaxRetriesReached) {
+				_ = o.store.TransitionState(task.ID, state.StateFailedEscalated)
+				return ErrValidationFailed
+			}
+			return err
+		}
+
+		if err := o.store.TransitionState(task.ID, state.StateRevisionRequested); err != nil {
+			return err
+		}
+	}
 }
