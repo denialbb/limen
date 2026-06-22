@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -303,12 +304,22 @@ func runTaskInteractive(taskID, dbPath, repoPath string) {
 	}
 
 	model := tui.NewModel(taskID, eventBus)
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	// NOTE: Orchestrator runs on a goroutine. When RunTask returns, the bus is
 	// closed, the TUI's event pump sees the closed channel, and the user can
 	// review the Timeline tab before quitting with q.
+	//
+	// The WaitGroup + cancellable context ensure that when the user quits
+	// early (presses q before RunTask returns), cancel() signals the
+	// orchestrator's ctx.Done() checks and wg.Wait() blocks for its deferred
+	// cleanup (DestroyWorktree) to run before the process exits. Without this,
+	// main returning would kill the goroutine mid-flight and leak the worktree.
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		if err := orch.RunTask(ctx, taskID); err != nil {
 			log.Printf("orchestrator: %v", err)
 		}
@@ -317,6 +328,8 @@ func runTaskInteractive(taskID, dbPath, repoPath string) {
 
 	program := tea.NewProgram(model, tea.WithAltScreen())
 	finalModel, err := program.Run()
+	cancel()  // signal the orchestrator to stop on early quit
+	wg.Wait() // let it clean up (DestroyWorktree) before exiting
 	if err != nil {
 		log.Fatalf("TUI exited with error: %v", err)
 	}

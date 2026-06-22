@@ -9,8 +9,6 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-
 	"github.com/denialbb/limen/internal/bus"
 )
 
@@ -50,13 +48,4 @@ func itoa(n int) string {
 // entropy scores and similar printed metrics.
 func floatToText(f float64) string {
 	return strconv.FormatFloat(f, 'f', 3, 64)
-}
-
-// forwardScrollKey is reserved for future explicit scroll-key routing; tabs
-// currently call viewport.Update directly to handle j/k and arrow keys.
-//
-// NOTE: Kept intentionally minimal so the routing seam stays explicit if a tab
-// later wants to consume a scroll key without delegating to the viewport.
-func forwardScrollKey(_ tea.KeyMsg) bool {
-	return false
 }

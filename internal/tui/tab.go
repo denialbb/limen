@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -58,20 +59,5 @@ func (t *TabStrip) View() string {
 // fmtTabLabel renders a single tab label as "<n>:<Label>". The index argument
 // is zero-based; the label is the canonical tab name.
 func fmtTabLabel(idx int, label string) string {
-	return strings.Join([]string{
-		itoa(idx + 1),
-		":",
-		label,
-	}, "")
-}
-
-// itoa is a self-contained int-to-string converter to avoid pulling fmt into a
-// hot rendering path. Supports values 0-9 (the only range produced here).
-func itoa(n int) string {
-	if n < 0 || n > 9 {
-		// NOTE: Defensive: only single-digit tab indices are produced; any
-		// outside that range falls back to fmt to avoid silent truncation.
-		return ""
-	}
-	return string(rune('0' + n))
+	return strconv.Itoa(idx+1) + ":" + label
 }

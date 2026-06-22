@@ -182,8 +182,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q", "ctrl+c":
 		m.quitting = true
 		return m, tea.Quit
+	default:
+		// TODO: "?" help overlay keybinding is not implemented; deferred per
+		// the TUI review. Implementing it requires a modal/overlay layer that
+		// suspends the active tab's rendering while open, which is out of
+		// scope for the v1 observe-only shell.
 	}
-
 	return m, nil
 }
 
@@ -296,7 +300,13 @@ func (m Model) handleBusEvent(msg busEventMsg) (tea.Model, tea.Cmd) {
 		setCurrentTab(&m, tabTimeline)
 	}
 
-	// Keep pumping until the bus closes.
+	// NOTE: The pump re-arms here even after TaskFinalized. This intentionally
+	// deviates from the design doc's literal "stops the event pump" wording:
+	// the orchestrator may still flush residual buffered events (e.g. a
+	// trailing WorkerFinished or a state echo) before closing the bus
+	// channel. Re-arming lets those drain cleanly; the pump stops for good
+	// when the channel close resolves to busChannelClosedMsg, at which point
+	// Update returns a nil command and the runtime idles.
 	return m, waitForEvent(m.eventCh)
 }
 

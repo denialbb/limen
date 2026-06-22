@@ -77,16 +77,24 @@ func (h *Header) Update(msg tea.Msg) {
 // View renders the one-line status bar. Format mirrors the design document:
 //
 //	limen | task <id> | <STATE> | r:<retry> e:<expand> | <spinner>
+//
+// Once the task is finalized the animated spinner is replaced by a static
+// "done" marker: a finalized task no longer has live activity, so a spinning
+// indicator would be misleading.
 func (h *Header) View() string {
 	stateName := string(h.state)
 	if stateName == "" {
 		stateName = "UNKNOWN"
+	}
+	tail := h.spinner.View()
+	if h.finalized {
+		tail = "done"
 	}
 	return strings.Join([]string{
 		headerStyle.Render("limen"),
 		headerFieldStyle.Render("task " + h.taskID),
 		headerStateStyle.Render(stateName),
 		headerCountStyle.Render(fmt.Sprintf("r:%d e:%d", h.retryCount, h.expandCount)),
-		headerFieldStyle.Render(h.spinner.View()),
+		headerFieldStyle.Render(tail),
 	}, " ")
 }

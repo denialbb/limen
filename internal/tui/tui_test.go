@@ -204,6 +204,82 @@ func TestTaskFinalizedAutoSwitchesToTimeline(t *testing.T) {
 	}
 }
 
+// TestCompletionFooter verifies that the Timeline tab renders the completion
+// footer (final state + output reference) once TaskFinalized arrives. This
+// guards against the B1 regression where state was collected but never read.
+func TestCompletionFooter(t *testing.T) {
+	b := bus.NewChannelBus()
+	defer b.Close()
+	m := newSizedModel(t, "task-foot", b)
+
+	// Drive a non-trivial state transition first so the timeline body is
+	// non-empty and the footer is visually distinct from the scroll region.
+	m = publishAndPump(t, m, b, &bus.TaskStateChanged{
+		TaskID:    "task-foot",
+		From:      state.StateCreated,
+		To:        state.StateWorkerRunning,
+		Timestamp: time.Now(),
+	})
+
+	m = publishAndPump(t, m, b, &bus.TaskFinalized{
+		TaskID:         "task-foot",
+		FinalState:     state.StateFailedEscalated,
+		FinalOutputRef: "diff --git a/x b/y @@ ...",
+		Timestamp:      time.Now(),
+	})
+
+	if !m.Finalized() {
+		t.Fatalf("model should be finalized after TaskFinalized")
+	}
+	if m.currentTab != tabTimeline {
+		t.Fatalf("currentTab = %d, want Timeline so the footer is visible", m.currentTab)
+	}
+
+	out := stripANSI(m.View())
+	if !strings.Contains(out, "FINAL: FAILED_ESCALATED") {
+		t.Fatalf("View() missing final state footer line\n--- got ---\n%s", out)
+	}
+	if !strings.Contains(out, "output: diff --git a/x b/y @@ ...") {
+		t.Fatalf("View() missing output reference in footer\n--- got ---\n%s", out)
+	}
+
+	// The footer must render below the timeline body, so both the body line
+	// and the footer should be present simultaneously.
+	if !strings.Contains(out, "WORKER_RUNNING") {
+		t.Fatalf("View() missing timeline body content alongside footer\n--- got ---\n%s", out)
+	}
+
+	// The header should reflect finalization by swapping the animated spinner
+	// for a static "done" marker (guards Header.finalized against becoming a
+	// dead write again).
+	if !strings.Contains(out, "done") {
+		t.Fatalf("View() missing finalized marker in header\n--- got ---\n%s", out)
+	}
+}
+
+// TestCompletionFooterNoOutputRef verifies the footer degrades to a single
+// state line when FinalOutputRef is empty, rather than printing a dangling
+// "output:" label.
+func TestCompletionFooterNoOutputRef(t *testing.T) {
+	b := bus.NewChannelBus()
+	defer b.Close()
+	m := newSizedModel(t, "task-foot-empty", b)
+
+	m = publishAndPump(t, m, b, &bus.TaskFinalized{
+		TaskID:     "task-foot-empty",
+		FinalState: state.StateCommitted,
+		Timestamp:  time.Now(),
+	})
+
+	out := stripANSI(m.View())
+	if !strings.Contains(out, "FINAL: COMMITTED") {
+		t.Fatalf("View() missing final state footer line\n--- got ---\n%s", out)
+	}
+	if strings.Contains(out, "output:") {
+		t.Fatalf("View() should not render output line when ref is empty\n--- got ---\n%s", out)
+	}
+}
+
 func TestBusChannelClosedFinalizes(t *testing.T) {
 	b := bus.NewChannelBus()
 	m := newSizedModel(t, "task-close", b)
