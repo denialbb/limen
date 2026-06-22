@@ -1,6 +1,7 @@
 package ndjson
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -209,6 +210,64 @@ func TestDecoder_MalformedJSON_DoesNotPanic(t *testing.T) {
 	_, _ = dec.Decode()
 }
 
+func TestDecoder_LineExceedsBuffer(t *testing.T) {
+	// Build a single line longer than the 1 MiB scanner limit. The content is
+	// valid JSON so the failure is purely about size, not syntax.
+	big := strings.Repeat("a", 1024*1024+100)
+	line := []byte(`{"x":"` + big + `"}` + "\n")
+
+	dec := NewDecoder(bytes.NewReader(line))
+	_, err := dec.Decode()
+	if err == nil {
+		t.Fatal("expected error for line exceeding 1 MiB buffer, got nil")
+	}
+	if !errors.Is(err, bufio.ErrTooLong) {
+		t.Fatalf("expected error wrapping bufio.ErrTooLong, got %v", err)
+	}
+}
+
+func TestDecoder_EmptyLineSkipped(t *testing.T) {
+	// Blank and whitespace-only lines between valid envelopes must be skipped
+	// rather than rejected as malformed JSON ("unexpected end of JSON input").
+	env := &Envelope{
+		Kind:  KindEvent,
+		Event: &EventEnvelope{Type: EventTypeWorkerStarted, TaskID: "t", Payload: []byte(`{}`), Timestamp: 1},
+	}
+	var buf bytes.Buffer
+	enc := NewEncoder(&buf)
+	if err := enc.Encode(env); err != nil {
+		t.Fatalf("encode 1: %v", err)
+	}
+	// Insert blank and whitespace-only lines between envelopes.
+	buf.WriteString("\n")
+	buf.WriteString("   \n")
+	buf.WriteString("\t\n")
+	if err := enc.Encode(env); err != nil {
+		t.Fatalf("encode 2: %v", err)
+	}
+	// Trailing blank lines should be tolerated too, not treated as EOF early.
+	buf.WriteString("\n\n")
+
+	dec := NewDecoder(&buf)
+	for i := 0; i < 2; i++ {
+		got, err := dec.Decode()
+		if err != nil {
+			t.Fatalf("decode %d: %v", i, err)
+		}
+		if got.Kind != KindEvent || got.Event == nil {
+			t.Fatalf("decode %d: got %+v, want event envelope", i, got)
+		}
+		if got.Event.TaskID != "t" {
+			t.Fatalf("decode %d: TaskID = %q, want %q", i, got.Event.TaskID, "t")
+		}
+	}
+	// After both valid envelopes, trailing blank lines must yield io.EOF, not a
+	// malformed-JSON error.
+	if _, err := dec.Decode(); !errors.Is(err, io.EOF) {
+		t.Fatalf("expected io.EOF after trailing blanks, got %v", err)
+	}
+}
+
 func TestDecoder_EOF(t *testing.T) {
 	dec := NewDecoder(bytes.NewReader(nil))
 	_, err := dec.Decode()
@@ -262,7 +321,6 @@ func TestEncoder_Concurrent(t *testing.T) {
 	start := make(chan struct{})
 
 	for g := 0; g < goroutines; g++ {
-		g := g
 		go func() {
 			defer wg.Done()
 			<-start

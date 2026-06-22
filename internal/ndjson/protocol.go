@@ -16,6 +16,7 @@ package ndjson
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -179,8 +180,6 @@ func (e *Encoder) EncodeToolResponse(resp *ToolResponse) error {
 // not safe for concurrent use; a single reader goroutine should own it.
 type Decoder struct {
 	scanner *bufio.Scanner
-	// buffered holds the last scanned line so error reports can include it.
-	buffered string
 }
 
 // NewDecoder returns a Decoder reading from r. The decoder uses a
@@ -194,23 +193,30 @@ func NewDecoder(r io.Reader) *Decoder {
 }
 
 // Decode reads one line, unmarshals it into an Envelope, and returns it.
-// Malformed JSON returns an error wrapping the offending line content for
-// debugging; it never panics. When the underlying reader is exhausted, Decode
-// returns io.EOF.
+// Blank or whitespace-only lines are skipped: Python print/logging output can
+// introduce stray empty lines between envelopes, and json.Unmarshal([]byte(""))
+// would otherwise fail with "unexpected end of JSON input". Malformed JSON
+// returns an error wrapping the offending line content for debugging; it never
+// panics. When the underlying reader is exhausted, Decode returns io.EOF.
 func (d *Decoder) Decode() (*Envelope, error) {
-	if !d.scanner.Scan() {
-		if err := d.scanner.Err(); err != nil {
-			d.buffered = ""
-			return nil, fmt.Errorf("ndjson: scan: %w", err)
+	for {
+		if !d.scanner.Scan() {
+			if err := d.scanner.Err(); err != nil {
+				return nil, fmt.Errorf("ndjson: scan: %w", err)
+			}
+			return nil, io.EOF
 		}
-		return nil, io.EOF
-	}
-	line := d.scanner.Bytes()
-	d.buffered = string(line)
+		line := d.scanner.Bytes()
+		// Skip blank or whitespace-only lines between envelopes.
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		buffered := string(line)
 
-	var env Envelope
-	if err := json.Unmarshal(line, &env); err != nil {
-		return nil, fmt.Errorf("ndjson: unmarshal line %q: %w", d.buffered, err)
+		var env Envelope
+		if err := json.Unmarshal(line, &env); err != nil {
+			return nil, fmt.Errorf("ndjson: unmarshal line %q: %w", buffered, err)
+		}
+		return &env, nil
 	}
-	return &env, nil
 }
