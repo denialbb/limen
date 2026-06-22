@@ -38,7 +38,8 @@ type cliWorker struct{}
 // ProduceSolution implements the worker interface.
 func (c *cliWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *git.Worktree, feedback string) error {
 	log.Printf("Worker producing solution for task %s", task.ID)
-	return nil
+	dummyPath := filepath.Join(wt.Path, "dummy_solution.txt")
+	return os.WriteFile(dummyPath, []byte("Hello from cliWorker"), 0644)
 }
 
 // cliValidator is a placeholder validator that always passes.

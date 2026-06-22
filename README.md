@@ -85,13 +85,42 @@ The Go Core ensures absolute correctness by executing this procedural pipeline f
 
 ## Development Status
 
-Limen is currently in its initial **Implementation Phase**.
-We have completed a comprehensive **Test-Driven Development (TDD)** pass:
+Limen has completed its core orchestration layer. The Go Core state machine, SQLite deterministic history tracking, and the Git Worktree virtualization engine are fully implemented and robustly tested. 
 
-- [x] Formalized all capability constraints, invariants, and boundaries in `.agents/docs/`
-- [x] Stubbed the Go SQLite WAL state machine interfaces
-- [x] Stubbed the Go Git Worktree virtualization interfaces
-- [x] Stubbed the Python MCP stateless clients and Router policy
-- [x] Established comprehensive failing test suites enforcing the separation of powers
+- [x] Formalized all capability constraints, invariants, and boundaries
+- [x] Implemented the Go SQLite WAL state machine
+- [x] Implemented the Go Git Worktree virtualization engine
+- [x] Built the core `limen` subprocess CLI 
+- [ ] Implement the Python MCP stateless clients and routing heuristics
 
-The next immediate phase is implementing the concrete execution logic within the Go Core to satisfy the test suites.
+---
+
+## Testing Locally
+
+The Go orchestration engine is functional and can be tested using the built CLI. While the actual LLM `Worker` and `Validator` clients are currently stubbed in the CLI facade, running a task will trace a complete "happy path" through the strict orchestration pipeline.
+
+**1. Build the CLI binary:**
+```bash
+go build -o bin/limen ./cmd/limen
+```
+
+**2. Run a task:**
+```bash
+./bin/limen run-task --task-id "test-alpha-1"
+```
+
+**3. Inspect the deterministic history:**
+The orchestration state is securely written to a local SQLite database (`limen.db`).
+```bash
+sqlite3 limen.db
+```
+```sql
+-- See the task's final state
+SELECT id, current_state FROM tasks WHERE id = 'test-alpha-1';
+
+-- Inspect the immutable timeline of state transitions
+SELECT * FROM state_transitions WHERE task_id = 'test-alpha-1' ORDER BY recorded_at ASC;
+
+-- Inspect the tool invocations
+SELECT * FROM tool_calls WHERE task_id = 'test-alpha-1';
+```

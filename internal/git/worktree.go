@@ -235,14 +235,14 @@ func parseConflictMarkers(content string) (base, proposed string) {
 		return "", ""
 	}
 	midIdx += start
-	endIdx := strings.Index(content[midIdx+len(markerMid):], markerEnd)
+	endIdx := strings.Index(content[midIdx+len("\n"+mid+"\n"):], theirs)
 	if endIdx == -1 {
 		return "", ""
 	}
-	endIdx += midIdx + len(markerMid)
+	endIdx += midIdx + len("\n"+mid+"\n")
 
-	base = content[start+len(markerStart):midIdx]
-	proposed = content[midIdx+len(markerMid):endIdx]
+	base = content[start+len(ours):midIdx]
+	proposed = content[midIdx+len("\n"+mid+"\n"):endIdx]
 	return base, proposed
 }
 

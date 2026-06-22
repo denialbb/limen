@@ -53,3 +53,4 @@ venv.bak/
 /bin/
 /docs/reviews/
 /.limen/
+limen.db*
