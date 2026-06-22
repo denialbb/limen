@@ -298,6 +298,11 @@ func (m Model) handleBusEvent(msg busEventMsg) (tea.Model, tea.Cmd) {
 		m.finalized = true
 		m.finalState = ev.FinalState
 		setCurrentTab(&m, tabTimeline)
+
+	case *bus.OrchestratorError:
+		// Routed to the Timeline tab only; it is the canonical "all activity"
+		// view and already received the event above. No dedicated error tab
+		// exists in the v1 observe-only shell.
 	}
 
 	// NOTE: The pump re-arms here even after TaskFinalized. This intentionally

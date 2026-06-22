@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/denialbb/limen/internal/bus"
+	"github.com/denialbb/limen/internal/git"
 	"github.com/denialbb/limen/internal/state"
 )
 
@@ -120,9 +121,14 @@ func TestEventRouting(t *testing.T) {
 	m = publishAndPump(t, m, b, &bus.RouterDecisionEvent{TaskID: "task-routing", Decision: bus.DecisionProceed, Rationale: "ok", Timestamp: now})
 	m = publishAndPump(t, m, b, &bus.WorkerStarted{TaskID: "task-routing", WorktreePath: "/tmp/wt", BaseCommit: "HEAD", Retry: 0, Timestamp: now})
 	m = publishAndPump(t, m, b, &bus.WorkerToolCall{TaskID: "task-routing", Tool: "write_file", Args: "x.txt", Timestamp: now})
+	m = publishAndPump(t, m, b, &bus.WorkerFileEdit{TaskID: "task-routing", Path: "x.txt", Op: "create", DiffHunk: "+", Timestamp: now})
+	m = publishAndPump(t, m, b, &bus.WorkerFinished{TaskID: "task-routing", Timestamp: now})
+	m = publishAndPump(t, m, b, &bus.ConflictDetected{TaskID: "task-routing", Regions: []git.ConflictRegion{{FilePath: "x.txt"}}, Timestamp: now})
 	m = publishAndPump(t, m, b, &bus.ValidatorExamining{TaskID: "task-routing", Criteria: []string{"compiles"}, Timestamp: now})
 	m = publishAndPump(t, m, b, &bus.ValidatorCriterionResult{TaskID: "task-routing", Criterion: "compiles", Passed: true, Detail: "ok", Timestamp: now})
+	m = publishAndPump(t, m, b, &bus.ValidatorVerdict{TaskID: "task-routing", Passes: true, Feedback: "LGTM", Timestamp: now})
 	m = publishAndPump(t, m, b, &bus.TaskStateChanged{TaskID: "task-routing", From: state.StateCreated, To: state.StateContextBuilding, Timestamp: now})
+	m = publishAndPump(t, m, b, &bus.TaskFinalized{TaskID: "task-routing", FinalState: state.StateCommitted, Timestamp: now})
 
 	routerLines := m.router.Lines()
 	if len(routerLines) != 3 {
@@ -136,8 +142,8 @@ func TestEventRouting(t *testing.T) {
 	}
 
 	workerLines := m.worker.Lines()
-	if len(workerLines) != 2 {
-		t.Fatalf("worker lines = %v, want 2 entries", workerLines)
+	if len(workerLines) != 5 {
+		t.Fatalf("worker lines = %v, want 5 entries", workerLines)
 	}
 	if !strings.Contains(workerLines[0], "Worker started:") {
 		t.Fatalf("worker line 0 = %q, want Worker started", workerLines[0])
@@ -145,19 +151,42 @@ func TestEventRouting(t *testing.T) {
 	if !strings.Contains(workerLines[1], "Tool call: write_file") {
 		t.Fatalf("worker line 1 = %q, want Tool call", workerLines[1])
 	}
+	if !strings.Contains(workerLines[2], "File edit: x.txt") {
+		t.Fatalf("worker line 2 = %q, want File edit", workerLines[2])
+	}
+	if !strings.Contains(workerLines[3], "Worker finished") {
+		t.Fatalf("worker line 3 = %q, want Worker finished", workerLines[3])
+	}
+	if !strings.Contains(workerLines[4], "Conflict detected: 1 region(s)") {
+		t.Fatalf("worker line 4 = %q, want Conflict detected", workerLines[4])
+	}
 
 	validatorLines := m.validator.Lines()
-	if len(validatorLines) != 2 {
-		t.Fatalf("validator lines = %v, want 2 entries", validatorLines)
+	if len(validatorLines) != 3 {
+		t.Fatalf("validator lines = %v, want 3 entries", validatorLines)
 	}
 	if !strings.Contains(validatorLines[1], "Criterion \"compiles\": PASS") {
 		t.Fatalf("validator line 1 = %q, want Criterion result", validatorLines[1])
 	}
+	if !strings.Contains(validatorLines[2], "Verdict: PASS") {
+		t.Fatalf("validator line 2 = %q, want Verdict", validatorLines[2])
+	}
 
-	// Timeline received all 8 events.
+	// Timeline received all 13 events.
 	timelineLines := m.timeline.Lines()
-	if len(timelineLines) != 8 {
-		t.Fatalf("timeline lines = %d, want 8", len(timelineLines))
+	if len(timelineLines) != 13 {
+		t.Fatalf("timeline lines = %d, want 13", len(timelineLines))
+	}
+
+	// TaskFinalized finalizes the model and auto-switches to the Timeline tab.
+	if !m.Finalized() {
+		t.Fatalf("model should be finalized after TaskFinalized")
+	}
+	if m.FinalState() != state.StateCommitted {
+		t.Fatalf("final state = %q, want %q", m.FinalState(), state.StateCommitted)
+	}
+	if m.currentTab != tabTimeline {
+		t.Fatalf("currentTab = %d, want %d (Timeline)", m.currentTab, tabTimeline)
 	}
 }
 
@@ -344,6 +373,38 @@ func TestQuitOnCtrlC(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Fatalf("Update returned nil command for Ctrl+C; want tea.Quit")
+	}
+	// Execute the command: it should produce a quit message, just like the q
+	// keybinding tested above.
+	msg := cmd()
+	if msg == nil {
+		t.Fatalf("quit command returned nil message")
+	}
+	got := typeName(msg)
+	if got != "quitMsg" && got != "QuitMsg" {
+		t.Fatalf("quit cmd produced %s, want a quit message", got)
+	}
+}
+
+// TestOrchestratorErrorRoutesToTimeline verifies that non-fatal orchestrator
+// errors are surfaced in the Timeline tab rather than silently dropped.
+func TestOrchestratorErrorRoutesToTimeline(t *testing.T) {
+	b := bus.NewChannelBus()
+	defer b.Close()
+	m := newSizedModel(t, "task-err", b)
+
+	m = publishAndPump(t, m, b, &bus.OrchestratorError{
+		TaskID:    "task-err",
+		Error:     "worktree provision failed",
+		Timestamp: time.Now(),
+	})
+
+	lines := m.timeline.Lines()
+	if len(lines) != 1 {
+		t.Fatalf("timeline lines = %d, want 1", len(lines))
+	}
+	if !strings.Contains(lines[0], "worktree provision failed") {
+		t.Fatalf("timeline line = %q, want error text", lines[0])
 	}
 }
 

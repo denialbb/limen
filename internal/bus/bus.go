@@ -348,3 +348,12 @@ type TaskFinalized struct {
 }
 
 func (*TaskFinalized) kind() string { return "TaskFinalized" }
+
+// OrchestratorError signals a non-fatal orchestrator error for TUI display.
+type OrchestratorError struct {
+	TaskID    string
+	Error     string
+	Timestamp time.Time
+}
+
+func (*OrchestratorError) kind() string { return "OrchestratorError" }

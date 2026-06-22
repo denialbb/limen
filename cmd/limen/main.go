@@ -321,7 +321,11 @@ func runTaskInteractive(taskID, dbPath, repoPath string) {
 	go func() {
 		defer wg.Done()
 		if err := orch.RunTask(ctx, taskID); err != nil {
-			log.Printf("orchestrator: %v", err)
+			eventBus.Publish(&bus.OrchestratorError{
+				TaskID:    taskID,
+				Error:     err.Error(),
+				Timestamp: time.Now(),
+			})
 		}
 		eventBus.Close()
 	}()
@@ -339,11 +343,12 @@ func runTaskInteractive(taskID, dbPath, repoPath string) {
 	}
 }
 
-// runTaskOneShot is the non-TTY fallback. It reuses the run-task log-style
-// output but still wires the event bus for parity with the interactive path:
-// the orchestrator emits the same structured events; with no subscriber they
-// are simply discarded (Publish fans out to an empty slice).
-func runTaskOneShot(taskID, dbPath, repoPath string) {
+// runTaskWithConfig executes the orchestrator in log-style (non-TUI) mode.
+// It performs store creation, worktree root resolution, bus wiring, task
+// creation, RunTask execution, and final state logging. Both the explicit
+// `run-task` subcommand and the non-TTY fallback from `runTUICmd` delegate here
+// to avoid duplicating the setup and teardown logic.
+func runTaskWithConfig(taskID, dbPath, repoPath string) {
 	store, err := state.NewSQLiteStore(dbPath)
 	if err != nil {
 		log.Fatalf("Failed to initialize SQLite store: %v", err)
@@ -357,6 +362,12 @@ func runTaskOneShot(taskID, dbPath, repoPath string) {
 		log.Fatalf("Failed to resolve worktree root: %v", err)
 	}
 
+	// NOTE: Log-style mode has no TUI subscriber, so a fresh ChannelBus with no
+	// subscribers discards every published event (Publish fans out to an empty
+	// subscriber slice and returns immediately, without blocking). The bus is
+	// still threaded through the orchestrator so the synthetic events from the
+	// CLI stubs are produced on the canonical transport and the interactive
+	// path can subscribe without recompiling.
 	eventBus := bus.NewChannelBus()
 	defer eventBus.Close()
 
@@ -371,6 +382,8 @@ func runTaskOneShot(taskID, dbPath, repoPath string) {
 		worktreeRoot,
 	)
 
+	// Ensure the task exists. This is for convenience during early development.
+	// Production may expect the task to be created by another command/API.
 	if _, err := store.CreateTask(taskID, 3); err != nil {
 		log.Printf("Note: failed to create task %s (it may already exist): %v", taskID, err)
 	}
@@ -386,6 +399,12 @@ func runTaskOneShot(taskID, dbPath, repoPath string) {
 		log.Fatalf("Failed to retrieve completed task: %v", err)
 	}
 	log.Printf("Task completed with state: %s", t.CurrentState)
+}
+
+// runTaskOneShot is the non-TTY fallback. It reuses the run-task log-style
+// output and shares the same setup path as the explicit `run-task` subcommand.
+func runTaskOneShot(taskID, dbPath, repoPath string) {
+	runTaskWithConfig(taskID, dbPath, repoPath)
 }
 
 func runTaskCmd() {
@@ -405,57 +424,5 @@ func runTaskCmd() {
 		os.Exit(1)
 	}
 
-	store, err := state.NewSQLiteStore(*dbPath)
-	if err != nil {
-		log.Fatalf("Failed to initialize SQLite store: %v", err)
-	}
-	defer store.Close()
-
-	manager := git.NewWorktreeManager(*repoPath, "main")
-
-	worktreeRoot, err := filepath.Abs(filepath.Join(*repoPath, ".limen", "worktrees"))
-	if err != nil {
-		log.Fatalf("Failed to resolve worktree root: %v", err)
-	}
-
-	// NOTE: run-task is one-shot scripting mode. There is no TUI subscriber, so
-	// a fresh ChannelBus with no subscribers discards every published event
-	// (Publish fans out to an empty subscriber slice and returns immediately,
-	// without blocking). The bus is still threaded through the orchestrator
-	// so the synthetic events from the CLI stubs are produced on the canonical
-	// transport and a future TTY-aware mode can subscribe without recompiling.
-	// TODO: For the bare `limen` invocation, runTUICmd will wire a real
-	// subscriber and tea.Program per .agents/docs/interactive_tui.md.
-	eventBus := bus.NewChannelBus()
-	defer eventBus.Close()
-
-	orch := orchestrator.NewOrchestrator(
-		store,
-		eventBus,
-		&cliRouter{},
-		&cliRetriever{},
-		&cliWorker{},
-		&cliValidator{},
-		&cliGit{manager: manager, repoPath: *repoPath},
-		worktreeRoot,
-	)
-
-	// Ensure the task exists. This is for convenience during early development.
-	// Production may expect the task to be created by another command/API.
-	_, err = store.CreateTask(*taskID, 3)
-	if err != nil {
-		log.Printf("Note: failed to create task %s (it may already exist): %v", *taskID, err)
-	}
-
-	log.Printf("Starting task %s", *taskID)
-	ctx := context.Background()
-	if err := orch.RunTask(ctx, *taskID); err != nil {
-		log.Fatalf("Task failed: %v", err)
-	}
-
-	t, err := store.GetTask(*taskID)
-	if err != nil {
-		log.Fatalf("Failed to retrieve completed task: %v", err)
-	}
-	log.Printf("Task completed with state: %s", t.CurrentState)
+	runTaskWithConfig(*taskID, *dbPath, *repoPath)
 }

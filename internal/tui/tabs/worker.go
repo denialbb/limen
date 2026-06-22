@@ -7,7 +7,6 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 
 	"github.com/denialbb/limen/internal/bus"
-	"github.com/denialbb/limen/internal/git"
 )
 
 // WorkerTab renders Worker activity: worktree details, tool-call stream, file
@@ -64,7 +63,7 @@ func (w *WorkerTab) handleEvent(ev bus.Event) {
 	case *bus.WorkerFinished:
 		appendLine(&w.lines, &w.viewport, e.Timestamp, "Worker finished")
 	case *bus.ConflictDetected:
-		body := fmt.Sprintf("Conflict detected: %d region(s)", conflictRegionCount(e.Regions))
+		body := fmt.Sprintf("Conflict detected: %d region(s)", len(e.Regions))
 		appendLine(&w.lines, &w.viewport, e.Timestamp, body)
 	}
 }
@@ -76,12 +75,6 @@ func baseCommitLabel(base string) string {
 		return "HEAD"
 	}
 	return base
-}
-
-// conflictRegionCount safely reports the number of conflict regions, tolerating
-// a nil slice so the count line still renders as zero on degenerate inputs.
-func conflictRegionCount(regions []git.ConflictRegion) int {
-	return len(regions)
 }
 
 // View renders the accumulated lines through the viewport.

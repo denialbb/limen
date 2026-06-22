@@ -172,7 +172,7 @@ func summarizeEvent(ev bus.Event) string {
 	case *bus.WorkerFinished:
 		return "worker finished"
 	case *bus.ValidatorExamining:
-		return fmt.Sprintf("validator examining: %d criteria", criterionCount(e.Criteria))
+		return fmt.Sprintf("validator examining: %d criteria", len(e.Criteria))
 	case *bus.ValidatorCriterionResult:
 		verdict := "FAIL"
 		if e.Passed {
@@ -186,9 +186,11 @@ func summarizeEvent(ev bus.Event) string {
 		}
 		return fmt.Sprintf("verdict: %s — %s", v, strings.TrimSpace(e.Feedback))
 	case *bus.ConflictDetected:
-		return fmt.Sprintf("conflict detected: %d region(s)", conflictRegionCount(e.Regions))
+		return fmt.Sprintf("conflict detected: %d region(s)", len(e.Regions))
 	case *bus.TaskFinalized:
 		return fmt.Sprintf("FINALIZED: state=%s output=%q", e.FinalState, truncate(e.FinalOutputRef, 40))
+	case *bus.OrchestratorError:
+		return fmt.Sprintf("orchestrator error: %s", e.Error)
 	}
 	return ""
 }
@@ -223,6 +225,8 @@ func eventTimestamp(ev bus.Event) time.Time {
 	case *bus.ConflictDetected:
 		return e.Timestamp
 	case *bus.TaskFinalized:
+		return e.Timestamp
+	case *bus.OrchestratorError:
 		return e.Timestamp
 	}
 	return time.Time{}

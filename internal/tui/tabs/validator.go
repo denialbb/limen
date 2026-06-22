@@ -52,7 +52,7 @@ func (v *ValidatorTab) handleEvent(ev bus.Event) {
 	switch e := ev.(type) {
 	case *bus.ValidatorExamining:
 		appendLine(&v.lines, &v.viewport, e.Timestamp,
-			fmt.Sprintf("Validator examining: %d criterion(s)", criterionCount(e.Criteria)))
+			fmt.Sprintf("Validator examining: %d criterion(s)", len(e.Criteria)))
 	case *bus.ValidatorCriterionResult:
 		verdict := "FAIL"
 		if e.Passed {
@@ -66,11 +66,6 @@ func (v *ValidatorTab) handleEvent(ev bus.Event) {
 	case *bus.ValidatorVerdict:
 		appendLine(&v.lines, &v.viewport, e.Timestamp, formatVerdict(e))
 	}
-}
-
-// criterionCount safely reports the number of validator criteria.
-func criterionCount(criteria []string) int {
-	return len(criteria)
 }
 
 // formatVerdict renders the overall verdict line as "Verdict: PASS — feedback".
