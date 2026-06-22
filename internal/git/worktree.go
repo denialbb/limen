@@ -3,7 +3,11 @@ package git
 
 import (
 	"context"
-	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 )
 
 // NOTE: This file contains stubs for the Git Worktree Manager.
@@ -40,36 +44,136 @@ type WorktreeManager interface {
 	DestroyWorktree(ctx context.Context, wt *Worktree) error
 }
 
-// worktreeManagerImpl implements the WorktreeManager interface.
 type worktreeManagerImpl struct {
-	// TODO: Add dependencies like database connections or Git CLI wrappers.
+	repoPath string
 }
 
 // NewWorktreeManager creates a new instance of the WorktreeManager.
-func NewWorktreeManager() WorktreeManager {
-	return &worktreeManagerImpl{}
+func NewWorktreeManager(repoPath string) WorktreeManager {
+	return &worktreeManagerImpl{
+		repoPath: repoPath,
+	}
 }
 
 // ProvisionWorktree creates an isolated environment via `git worktree add`.
 func (m *worktreeManagerImpl) ProvisionWorktree(ctx context.Context, baseCommit, branchName, path string) (*Worktree, error) {
-	// TODO: Implement `git worktree add` provisioning logic.
-	return nil, errors.New("not implemented")
+	var cmd *exec.Cmd
+	if branchName != "" {
+		cmd = exec.CommandContext(ctx, "git", "worktree", "add", "-b", branchName, path, baseCommit)
+	} else {
+		cmd = exec.CommandContext(ctx, "git", "worktree", "add", path, baseCommit)
+	}
+	cmd.Dir = m.repoPath
+
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("git worktree add failed: %w, output: %s", err, string(out))
+	}
+
+	return &Worktree{
+		Path:       path,
+		Branch:     branchName,
+		BaseCommit: baseCommit,
+	}, nil
 }
 
 // CheckForConflicts detects if a rebase/merge conflict occurs.
 func (m *worktreeManagerImpl) CheckForConflicts(ctx context.Context, wt *Worktree) (bool, error) {
-	// TODO: Implement conflict detection logic.
-	return false, errors.New("not implemented")
+	cmd := exec.CommandContext(ctx, "git", "ls-files", "--unmerged")
+	cmd.Dir = wt.Path
+	out, err := cmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("git ls-files failed: %w", err)
+	}
+	return len(strings.TrimSpace(string(out))) > 0, nil
 }
 
 // ExtractConflictRegions extracts conflicting diff regions.
 func (m *worktreeManagerImpl) ExtractConflictRegions(ctx context.Context, wt *Worktree) ([]ConflictRegion, error) {
-	// TODO: Implement conflict region extraction logic.
-	return nil, errors.New("not implemented")
+	cmd := exec.CommandContext(ctx, "git", "diff", "--name-only", "--diff-filter=U")
+	cmd.Dir = wt.Path
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git diff failed: %w", err)
+	}
+
+	var regions []ConflictRegion
+	files := strings.Split(strings.TrimSpace(string(out)), "\n")
+	for _, f := range files {
+		if f == "" {
+			continue
+		}
+
+		filePath := filepath.Join(wt.Path, f)
+		contentBytes, err := os.ReadFile(filePath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read conflicted file %s: %w", f, err)
+		}
+
+		fileRegions := parseConflictRegions(f, string(contentBytes))
+		regions = append(regions, fileRegions...)
+	}
+
+	return regions, nil
+}
+
+func parseConflictRegions(filePath string, content string) []ConflictRegion {
+	var regions []ConflictRegion
+	lines := strings.Split(content, "\n")
+
+	inConflict := false
+	inBase := false
+	inProposed := false
+
+	var baseLines []string
+	var proposedLines []string
+
+	for _, line := range lines {
+		if strings.HasPrefix(line, "<<<<<<<") {
+			inConflict = true
+			inBase = true
+			inProposed = false
+			baseLines = nil
+			proposedLines = nil
+			continue
+		}
+		if strings.HasPrefix(line, "=======") && inConflict {
+			inBase = false
+			inProposed = true
+			continue
+		}
+		if strings.HasPrefix(line, ">>>>>>>") && inConflict {
+			regions = append(regions, ConflictRegion{
+				FilePath:     filePath,
+				BaseDiff:     strings.Join(baseLines, "\n"),
+				ProposedDiff: strings.Join(proposedLines, "\n"),
+			})
+			inConflict = false
+			inBase = false
+			inProposed = false
+			continue
+		}
+
+		if inBase {
+			baseLines = append(baseLines, line)
+		} else if inProposed {
+			proposedLines = append(proposedLines, line)
+		}
+	}
+	return regions
 }
 
 // DestroyWorktree deletes the ephemeral worktree directory.
 func (m *worktreeManagerImpl) DestroyWorktree(ctx context.Context, wt *Worktree) error {
-	// TODO: Implement destruction logic (remove directory, `git worktree prune`).
-	return errors.New("not implemented")
+	cmd := exec.CommandContext(ctx, "git", "worktree", "remove", "--force", wt.Path)
+	cmd.Dir = m.repoPath
+	if err := cmd.Run(); err != nil {
+		// Fallback for older git versions or if path is missing
+		os.RemoveAll(wt.Path)
+		cmdPrune := exec.CommandContext(ctx, "git", "worktree", "prune")
+		cmdPrune.Dir = m.repoPath
+		if errPrune := cmdPrune.Run(); errPrune != nil {
+			return fmt.Errorf("failed to destroy worktree: %v (prune error: %w)", err, errPrune)
+		}
+	}
+	return nil
 }
