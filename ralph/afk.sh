@@ -1,14 +1,8 @@
 #!/bin/bash
 set -eo pipefail
 
-SESSION_FILE=".ralph_session"
-SESSION_ID=""
 RALPH_PORT="${RALPH_PORT:-4096}"
 SERVE_PID=""
-
-[[ -f "$SESSION_FILE" ]] && SESSION_ID=$(tr -d '[:space:]' < "$SESSION_FILE")
-# An empty/stale file means no usable session yet.
-[[ -z "$SESSION_ID" ]] && rm -f "$SESSION_FILE"
 
 iterations=${1:-20}
 mkdir -p issues/done
@@ -48,41 +42,7 @@ ensure_server() {
         sleep 1
     done
     echo "opencode serve ready (pid $SERVE_PID) at http://localhost:$RALPH_PORT"
-}
-
-# ensure_session: get the session ID before any real iteration runs, so the
-# user can watch ralph work live. opencode has no `session create` subcommand;
-# sessions are created implicitly by `opencode run`. Send a minimal warmup
-# prompt to spawn the session, then capture its ID via `opencode session list`.
-ensure_session() {
-    if [[ -n "$SESSION_ID" ]]; then
-        echo "Resuming session: $SESSION_ID"
-        return 0
-    fi
-
-    echo "Creating ralph session (warmup)..."
-    set +e
-    opencode run \
-        --attach "http://localhost:$RALPH_PORT" \
-        --agent python-go-coder \
-        --dangerously-skip-permissions \
-        --title "ralph-$(date +%Y%m%d-%H%M%S)" \
-        "ack" \
-        >/dev/null 2>&1
-    set -e
-
-    local sid
-    sid=$(opencode session list 2>/dev/null | awk '/^ses_/ {print $1; exit}')
-    if [[ -z "$sid" ]]; then
-        echo "WARNING: could not create or capture session ID. Continuing without --session." >&2
-        return 1
-    fi
-
-    SESSION_ID="$sid"
-    echo "$sid" > "$SESSION_FILE"
-    echo ""
-    echo ">>> Ralph session: $sid"
-    echo ">>> Watch live:    opencode attach http://localhost:$RALPH_PORT"
+    echo ">>> Watch live: opencode attach http://localhost:$RALPH_PORT"
     echo ""
 }
 
@@ -207,7 +167,6 @@ PY
 prompt_body=$(cat ralph/prompt.md)
 
 ensure_server
-ensure_session
 
 for ((i = 1; i <= iterations; i++)); do
     remaining=$(count_remaining)
@@ -232,6 +191,10 @@ for ((i = 1; i <= iterations; i++)); do
     tmpfile=$(mktemp)
     trap "rm -f $tmpfile" EXIT
 
+    # Fresh session per iteration: no --session flag, no context bleed.
+    # A title helps identify the session in `opencode session list`.
+    title="ralph-$(basename "$task_file" .md)"
+
     prompt=$(
         cat <<EOF
 Previous commits:
@@ -246,18 +209,13 @@ $prompt_body
 EOF
     )
 
-    session_args=()
-    if [[ -n "$SESSION_ID" ]]; then
-        session_args=(--session "$SESSION_ID")
-    fi
-
     set +e
     opencode run \
         --attach "http://localhost:$RALPH_PORT" \
-        "${session_args[@]}" \
         --agent python-go-coder \
         --dangerously-skip-permissions \
         --format json \
+        --title "$title" \
         "$prompt" 2>"$tmpfile.err" |
         grep --line-buffered '^{' |
         tee "$tmpfile" |
