@@ -12,29 +12,16 @@ import (
 	"github.com/denialbb/limen/internal/state"
 )
 
-// headerStyle applies a single-line, low-saturation treatment to the persistent
-// status line. Kept deliberately minimal so the cognitive components' tabs get
-// the visual focus.
-var (
-	headerStyle      = lipgloss.NewStyle().Bold(true).Background(lipgloss.Color("63")).Foreground(lipgloss.Color("15")).Padding(0, 1)
-	headerFieldStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	headerStateStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("213"))
-	headerCountStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
-)
-
-// Header renders the slim persistent status line. It tracks the task ID, the
-// most recent state, retry and expand counts, and a spinner. The state and
-// counts are updated from bus events; the spinner ticks with the model.
 type Header struct {
 	taskID      string
 	state       state.TaskState
-	retryCount   int
+	retryCount  int
 	expandCount int
 	spinner     spinner.Model
 	finalized   bool
+	width       int
 }
 
-// NewHeader constructs a Header seeded with the CREATED state.
 func NewHeader(taskID string) *Header {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
@@ -45,27 +32,23 @@ func NewHeader(taskID string) *Header {
 	}
 }
 
-// SetSpinner copies the parent model's spinner into the header so its View()
-// reflects the latest tick. The header does not own tick scheduling.
 func (h *Header) SetSpinner(sp spinner.Model) {
 	h.spinner = sp
 }
 
-// Update ingests bus events that influence the status line: state transitions
-// set the current state, the router decision carries the expand count, and the
-// worker started event carries the current retry count.
+func (h *Header) SetWidth(width int) {
+	h.width = width
+}
+
 func (h *Header) Update(msg tea.Msg) {
 	switch ev := msg.(type) {
 	case *bus.TaskStateChanged:
-		// The header shows the authoritative latest state terminal node.
 		h.state = ev.To
 
 	case *bus.RouterDecisionEvent:
-		// Expand count is carried on the decision event per the taxonomy.
 		h.expandCount = ev.ExpandCount
 
 	case *bus.WorkerStarted:
-		// The worker restates its retry index on every pass.
 		h.retryCount = ev.Retry
 
 	case *bus.TaskFinalized:
@@ -74,27 +57,37 @@ func (h *Header) Update(msg tea.Msg) {
 	}
 }
 
-// View renders the one-line status bar. Format mirrors the design document:
-//
-//	limen | task <id> | <STATE> | r:<retry> e:<expand> | <spinner>
-//
-// Once the task is finalized the animated spinner is replaced by a static
-// "done" marker: a finalized task no longer has live activity, so a spinning
-// indicator would be misleading.
 func (h *Header) View() string {
+	brand, field, state, count := theme.HeaderStyles()
+
 	stateName := string(h.state)
 	if stateName == "" {
 		stateName = "UNKNOWN"
 	}
-	tail := h.spinner.View()
+
+	spinnerOrDone := h.spinner.View()
 	if h.finalized {
-		tail = "done"
+		spinnerOrDone = "done"
 	}
-	return strings.Join([]string{
-		headerStyle.Render("limen"),
-		headerFieldStyle.Render("task " + h.taskID),
-		headerStateStyle.Render(stateName),
-		headerCountStyle.Render(fmt.Sprintf("r:%d e:%d", h.retryCount, h.expandCount)),
-		headerFieldStyle.Render(tail),
+
+	leftGroup := strings.Join([]string{
+		brand.Render("limen"),
+		field.Render("task " + h.taskID),
 	}, " ")
+
+	rightGroup := strings.Join([]string{
+		state.Render(stateName),
+		count.Render(fmt.Sprintf("r:%d e:%d", h.retryCount, h.expandCount)),
+		field.Render(spinnerOrDone),
+	}, " ")
+
+	leftWidth := lipgloss.Width(leftGroup)
+	rightWidth := lipgloss.Width(rightGroup)
+
+	if h.width > 0 && leftWidth+rightWidth < h.width {
+		gap := strings.Repeat(" ", h.width-leftWidth-rightWidth)
+		return leftGroup + gap + rightGroup
+	}
+
+	return leftGroup + " " + rightGroup
 }
