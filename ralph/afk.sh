@@ -3,27 +3,87 @@ set -eo pipefail
 
 SESSION_FILE=".ralph_session"
 SESSION_ID=""
+RALPH_PORT="${RALPH_PORT:-4096}"
+SERVE_PID=""
 
-[[ -f "$SESSION_FILE" ]] && SESSION_ID=$(cat "$SESSION_FILE")
-# An empty/stale file means no usable session yet; let the first run create one.
+[[ -f "$SESSION_FILE" ]] && SESSION_ID=$(tr -d '[:space:]' < "$SESSION_FILE")
+# An empty/stale file means no usable session yet.
 [[ -z "$SESSION_ID" ]] && rm -f "$SESSION_FILE"
 
 iterations=${1:-20}
 mkdir -p issues/done
 
-# capture_session_id: extract the session ID after the first run.
-# `opencode run` does not emit the session ID in its JSON event stream, so we
-# fall back to `opencode session list`, whose newest entry is the one we just
-# created. Session IDs are prefixed with "ses_".
-capture_session_id() {
-    local sid=""
-    sid=$(opencode session list 2>/dev/null | awk '/^ses_/ {print $1; exit}')
-    if [[ -n "$sid" ]]; then
-        echo "$sid" > "$SESSION_FILE"
-        echo "Captured session: $sid"
-    else
-        echo "WARNING: could not capture session ID; subsequent iterations will spawn fresh sessions." >&2
+cleanup() {
+    if [[ -n "$SERVE_PID" ]] && kill -0 "$SERVE_PID" 2>/dev/null; then
+        echo "Stopping opencode serve (pid $SERVE_PID)..."
+        kill "$SERVE_PID" 2>/dev/null || true
+        wait "$SERVE_PID" 2>/dev/null || true
     fi
+}
+trap cleanup EXIT
+
+# ensure_server: start `opencode serve` in the background so the user can
+# `opencode attach http://localhost:$RALPH_PORT` to watch ralph live without
+# interfering with the headless `opencode run` invocations. Each iteration
+# sends its prompt via `opencode run --attach http://localhost:$RALPH_PORT`.
+ensure_server() {
+    if curl -s "http://localhost:$RALPH_PORT" >/dev/null 2>&1; then
+        echo "Reusing existing opencode server at http://localhost:$RALPH_PORT"
+        return 0
+    fi
+
+    echo "Starting opencode serve on port $RALPH_PORT..."
+    opencode serve --port "$RALPH_PORT" >/tmp/ralph-serve.log 2>&1 &
+    SERVE_PID=$!
+
+    # Wait for the server to accept connections.
+    local waited=0
+    while ! curl -s "http://localhost:$RALPH_PORT" >/dev/null 2>&1; do
+        waited=$((waited + 1))
+        if [[ "$waited" -ge 30 ]]; then
+            echo "ERROR: opencode serve did not start within 30s." >&2
+            cat /tmp/ralph-serve.log >&2
+            return 1
+        fi
+        sleep 1
+    done
+    echo "opencode serve ready (pid $SERVE_PID) at http://localhost:$RALPH_PORT"
+}
+
+# ensure_session: get the session ID before any real iteration runs, so the
+# user can watch ralph work live. opencode has no `session create` subcommand;
+# sessions are created implicitly by `opencode run`. Send a minimal warmup
+# prompt to spawn the session, then capture its ID via `opencode session list`.
+ensure_session() {
+    if [[ -n "$SESSION_ID" ]]; then
+        echo "Resuming session: $SESSION_ID"
+        return 0
+    fi
+
+    echo "Creating ralph session (warmup)..."
+    set +e
+    opencode run \
+        --attach "http://localhost:$RALPH_PORT" \
+        --agent python-go-coder \
+        --dangerously-skip-permissions \
+        --title "ralph-$(date +%Y%m%d-%H%M%S)" \
+        "ack" \
+        >/dev/null 2>&1
+    set -e
+
+    local sid
+    sid=$(opencode session list 2>/dev/null | awk '/^ses_/ {print $1; exit}')
+    if [[ -z "$sid" ]]; then
+        echo "WARNING: could not create or capture session ID. Continuing without --session." >&2
+        return 1
+    fi
+
+    SESSION_ID="$sid"
+    echo "$sid" > "$SESSION_FILE"
+    echo ""
+    echo ">>> Ralph session: $sid"
+    echo ">>> Watch live:    opencode attach http://localhost:$RALPH_PORT"
+    echo ""
 }
 
 stream_text='
@@ -146,6 +206,9 @@ PY
 
 prompt_body=$(cat ralph/prompt.md)
 
+ensure_server
+ensure_session
+
 for ((i = 1; i <= iterations; i++)); do
     remaining=$(count_remaining)
     if [ "$remaining" -eq 0 ]; then
@@ -190,6 +253,7 @@ EOF
 
     set +e
     opencode run \
+        --attach "http://localhost:$RALPH_PORT" \
         "${session_args[@]}" \
         --agent python-go-coder \
         --dangerously-skip-permissions \
@@ -210,18 +274,6 @@ EOF
         continue
     fi
     rm -f "$tmpfile.err"
-
-    # On first iteration we created the session implicitly; capture its ID now.
-    if [[ -z "$SESSION_ID" ]]; then
-        capture_session_id "$tmpfile"
-        SESSION_ID=$(cat "$SESSION_FILE" 2>/dev/null)
-        if [[ -n "$SESSION_ID" ]]; then
-            echo ""
-            echo ">>> Ralph session: $SESSION_ID"
-            echo ">>> Attach with: opencode --session $SESSION_ID"
-            echo ""
-        fi
-    fi
 
     result=$(jq -r "$final_result" "$tmpfile" 2>/dev/null || echo "")
 
