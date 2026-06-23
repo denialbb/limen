@@ -3,7 +3,7 @@
   "permission": {
     "doom_loop": "allow",
     "external_directory": "deny",
-    "webfetch": "deny",
+    "webfetch": "allow",
     "read": {
       "*": "allow",
       "*.env": "deny",
@@ -16,16 +16,32 @@
       ".git/*": "deny"
     },
     "bash": {
-      "*": "deny",
-      "git *": "allow",
-      "pytest *": "allow",
-      "go test *": "allow",
-      "go build *": "allow",
-      "limen *": "allow",
-      "ls *": "allow",
-      "cat *": "allow",
-      "grep *": "allow",
-      "find *": "allow"
+      "*": "allow",
+      "rm -rf /": "deny",
+      "rm -rf /*": "deny",
+      "rm -rf ~": "deny",
+      "rm -rf ~/*": "deny",
+      "rm -rf *": "deny",
+      "rm -fr *": "deny",
+      "sudo *": "deny",
+      "su *": "deny",
+      "chmod -R *": "deny",
+      "chown -R *": "deny",
+      "chown * * *": "deny",
+      "dd *": "deny",
+      "mkfs *": "deny",
+      "fdisk *": "deny",
+      "curl * | sh": "deny",
+      "curl * | bash": "deny",
+      "wget * | sh": "deny",
+      "wget * | bash": "deny",
+      "git push --force *": "allow",
+      "git push -f *": "allow",
+      "git reset --hard *": "deny",
+      "git clean -fd*": "deny",
+      "git clean -fdx*": "deny",
+      ": () { :|:& };:": "deny",
+      "git commit --amend *": "deny"
     }
   }
 }

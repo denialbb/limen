@@ -1,34 +1,30 @@
 # ISSUES
 
-Local issue files from `issues/` are provided at start of context. Parse them to understand the open issues.
+Local issue files from `issues/` are provided at start of context. Parse them to
+understand the open issues. Each issue file begins with a `Type: AFK` or
+`Type: HITL` line — only AFK issues are yours to work on.
 
-You will work on the AFK issues only, not the HITL ones.
+You will work on exactly ONE issue per run: the issue file named in your prompt.
+Do not touch any other issue file. Do not work on HITL issues.
 
-You've also been passed a file containing the last few commits. Review these to understand what work has been done.
-
-If all AFK tasks are complete, output <promise>NO MORE TASKS</promise>.
+You've also been passed a file containing the last few commits. Review these to
+understand what work has been done.
 
 # TASK SELECTION
 
-Pick the next task. Prioritize tasks in this order:
+The script picks the next AFK issue whose blockers are all complete and passes
+it to you by filename. Work only on that issue. Prioritize, within the issue,
+in this order:
 
 1. Critical bugfixes
 2. Development infrastructure
-
-Getting development infrastructure like tests and types and dev scripts ready is an important precursor to building features.
-
-3. Tracer bullets for new features
-
-Tracer bullets are small slices of functionality that go through all layers of the system, allowing you to test and validate your approach early. This helps in identifying potential issues and ensures that the overall architecture is sound before investing significant time in development.
-
-TL;DR - build a tiny, end-to-end slice of the feature first, then expand it out.
-
+3. Tracer bullets for new features (small end-to-end slices through all layers)
 4. Polish and quick wins
 5. Refactors
 
 # EXPLORATION
 
-Explore the repo.
+Explore the repo to understand the existing code before editing.
 
 # IMPLEMENTATION
 
@@ -36,10 +32,13 @@ Use /tdd to complete the task.
 
 # FEEDBACK LOOPS
 
-Before committing, run the feedback loops:
+This is a Go + Python repo. Before committing, run:
 
-- `npm run test` to run the tests
-- `npm run typecheck` to run the type checker
+- `go test ./...` to run the Go tests
+- `pytest` to run the Python tests
+
+Run the issue's `## Verify` commands too — they are the issue's acceptance
+contract and the outer loop will re-run them to decide completion.
 
 # COMMIT
 
@@ -51,10 +50,11 @@ Make a git commit. The commit message must:
 
 # THE ISSUE
 
-If the task is complete, move the issue file to `issues/done/`.
-
-If the task is not complete, add a note to the issue file with what was done.
+If the task is complete (all `## Verify` commands pass and all acceptance
+criteria boxes can be checked), stop. Do not move the issue file yourself; the
+outer script verifies and moves it on success.
 
 # FINAL RULES
 
-ONLY WORK ON A SINGLE TASK.
+ONLY WORK ON THE NAMED ISSUE. DO NOT commit until `go test ./...` and `pytest`
+both pass.

@@ -9,7 +9,7 @@ description: >-
   the agent will generate a compact handler with proper error handling and
   comments.
 mode: all
-model: opencode-go/kimi-k2.7-code
+model: opencode-go/deepseek-v4-pro
 permission:
   webfetch: deny
   websearch: deny
