@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from limen.mock._router import router_fn
-from limen.mock._worker import worker_fn
-from limen.mock._validator import validator_fn
+from limen.mock.router import router_fn
+from limen.mock.worker import worker_fn
+from limen.mock.validator import validator_fn
 
 
 # ---------------------------------------------------------------------------
