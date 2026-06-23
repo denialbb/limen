@@ -208,6 +208,11 @@ func main() {
 		// subcommand-style invocation remains available alongside the simple form.
 		runTUICmd()
 	default:
+		if strings.HasPrefix(command, "-") {
+			os.Args = append([]string{os.Args[0], "tui"}, os.Args[1:]...)
+			runTUICmd()
+			return
+		}
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", command)
 		printUsage()
 		os.Exit(1)
