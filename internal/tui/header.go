@@ -58,7 +58,7 @@ func (h *Header) Update(msg tea.Msg) {
 }
 
 func (h *Header) View() string {
-	brand, field, state, count := theme.HeaderStyles()
+	brand, field, state, count, container := theme.HeaderStyles()
 
 	stateName := string(h.state)
 	if stateName == "" {
@@ -81,13 +81,17 @@ func (h *Header) View() string {
 		field.Render(spinnerOrDone),
 	}, " ")
 
-	leftWidth := lipgloss.Width(leftGroup)
-	rightWidth := lipgloss.Width(rightGroup)
+	combined := leftGroup + " " + rightGroup
 
-	if h.width > 0 && leftWidth+rightWidth < h.width {
-		gap := strings.Repeat(" ", h.width-leftWidth-rightWidth)
-		return leftGroup + gap + rightGroup
+	if h.width > 0 {
+		leftWidth := lipgloss.Width(leftGroup)
+		rightWidth := lipgloss.Width(rightGroup)
+		totalContent := leftWidth + 1 + rightWidth
+		if totalContent < h.width {
+			gap := strings.Repeat(" ", h.width-totalContent)
+			combined = leftGroup + gap + rightGroup
+		}
 	}
 
-	return leftGroup + " " + rightGroup
+	return container.Render(combined)
 }

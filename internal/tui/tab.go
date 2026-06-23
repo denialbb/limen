@@ -39,8 +39,13 @@ func (t *TabStrip) View(width int) string {
 		}
 	}
 
+	boundary := theme.TabBoundaryPad
+	gapBetween := theme.TabPadBetween
+
 	if width <= 0 {
-		return strings.Join(parts, strings.Repeat(" ", theme.TabPadBetween))
+		gap := strings.Repeat(" ", gapBetween)
+		inner := strings.Join(parts, gap)
+		return strings.Repeat(" ", boundary) + inner + strings.Repeat(" ", boundary)
 	}
 
 	tabWidths := make([]int, len(parts))
@@ -50,28 +55,31 @@ func (t *TabStrip) View(width int) string {
 		totalTabsWidth += tabWidths[i]
 	}
 
+	totalBoundaries := 2 * boundary
 	gapCount := len(parts) - 1
+	available := width - totalTabsWidth - totalBoundaries
+
 	baseGap := 0
-	extra := 0
-	if gapCount > 0 {
-		available := width - totalTabsWidth
-		if available > 0 {
-			baseGap = available / gapCount
-			extra = available % gapCount
-		}
+	if gapCount > 0 && available > gapCount {
+		baseGap = available / gapCount
 	}
 
 	var sb strings.Builder
+	sb.WriteString(strings.Repeat(" ", boundary))
 	for i, tab := range parts {
 		sb.WriteString(tab)
 		if i < gapCount {
 			gapSize := baseGap
-			if i < extra {
+			if i < available%gapCount {
 				gapSize++
+			}
+			if gapSize < 1 {
+				gapSize = 1
 			}
 			sb.WriteString(strings.Repeat(" ", gapSize))
 		}
 	}
+	sb.WriteString(strings.Repeat(" ", boundary))
 
-	return sb.String()
+	return lipgloss.Place(width, 1, lipgloss.Center, lipgloss.Center, sb.String())
 }

@@ -325,7 +325,9 @@ func (m Model) View() string {
 		return ""
 	}
 
-	sep := theme.SeparatorStyle().Render(strings.Repeat(theme.SeparatorRune, m.width))
+	padV := theme.SeparatorPadV
+	sepLine := theme.SeparatorStyle().Render(strings.Repeat(theme.SeparatorRune, m.width))
+	sep := strings.Repeat("\n", padV) + sepLine + strings.Repeat("\n", padV)
 	content := m.activeTabView()
 	return strings.Join([]string{m.header.View(), sep, content, m.tabStrip.View(m.width)}, "\n")
 }

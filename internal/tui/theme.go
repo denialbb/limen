@@ -19,12 +19,13 @@ type Theme struct {
 	TabInactiveColor   string
 	TabPadH            int
 	TabPadBetween      int
+	TabBoundaryPad     int
 
 	// Separator constants.
 	SeparatorColor     string
 	SeparatorRune      string
-	SeparatorPadLeft   int
-	SeparatorPadRight  int
+	SeparatorPadH      int
+	SeparatorPadV      int
 
 	// Content padding.
 	ContentPadLeft     int
@@ -43,19 +44,20 @@ func NewTheme() *Theme {
 		TabActiveFgColor:   "15",
 		TabInactiveColor:   "245",
 		TabPadH:            1,
-		TabPadBetween:      2,
+		TabPadBetween:      3,
+		TabBoundaryPad:     2,
 
 		SeparatorColor:   "240",
 		SeparatorRune:    "─",
-		SeparatorPadLeft: 0,
-		SeparatorPadRight:0,
+		SeparatorPadH:    0,
+		SeparatorPadV:    1,
 
 		ContentPadLeft: 0,
 	}
 }
 
 // HeaderStyles builds the lipgloss styles for the header using the theme values.
-func (t *Theme) HeaderStyles() (brand, field, state, count lipgloss.Style) {
+func (t *Theme) HeaderStyles() (brand, field, state, count, container lipgloss.Style) {
 	brand = lipgloss.NewStyle().
 		Bold(true).
 		Background(lipgloss.Color(t.HeaderBgColor)).
@@ -71,6 +73,9 @@ func (t *Theme) HeaderStyles() (brand, field, state, count lipgloss.Style) {
 
 	count = lipgloss.NewStyle().
 		Foreground(lipgloss.Color(t.HeaderCountColor))
+
+	container = lipgloss.NewStyle().
+		Background(lipgloss.Color(t.HeaderBgColor))
 
 	return
 }
