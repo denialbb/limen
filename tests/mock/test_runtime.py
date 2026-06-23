@@ -52,9 +52,9 @@ def _make_runtime(
     return rt, sin, sout
 
 
-def _request_envelope(task_id: str = "task-1") -> dict:
+def _request_envelope(task_id: str = "task-1", attempt: int = 1) -> dict:
     """Build a Go-style request envelope as the PRD spec describes."""
-    return {"task": {"id": task_id, "description": "fix bug"}, "attempt": 1}
+    return {"task": {"id": task_id, "description": "fix bug"}, "attempt": attempt}
 
 
 def _line(env: dict) -> str:
@@ -237,15 +237,17 @@ class TestTranscriptSequencing:
         ]
         t = _make_transcript("validator", entries)
 
-        # Invocation 1
-        req = _line(_request_envelope("task-1"))
+        # NODE: each subprocess is stateless; the attempt field from the Go
+        # request serves as the 1-based transcript index.
+        # Invocation 1 — attempt=1 -> entry 0 ("fail1")
+        req = _line(_request_envelope("task-1", attempt=1))
         rt, sin, sout = _make_runtime(t, stdin_content=req)
         rt.run_role("validator", lambda e, _req: e)
         envs1 = _drain(sout)
         assert envs1[0]["event"]["payload"]["feedback"] == "fail1"
 
-        # Invocation 2 — swap stdin/stdout for clean StringIOs
-        rt._stdin = io.StringIO(_line(_request_envelope("task-1")))
+        # Invocation 2 — attempt=2 -> entry 1 ("pass")
+        rt._stdin = io.StringIO(_line(_request_envelope("task-1", attempt=2)))
         sout2 = io.StringIO()
         rt._stdout = sout2
         rt.run_role("validator", lambda e, _req: e)
@@ -284,15 +286,15 @@ class TestTranscriptExhaustion:
             "router", [{"decision": "proceed", "rationale": "ok", "complexity": "l"}]
         )
 
-        # Consume the only entry.
-        req = _line(_request_envelope("task-1"))
+        # Consume the only entry (attempt=1 -> index 0).
+        req = _line(_request_envelope("task-1", attempt=1))
         rt, sin, sout = _make_runtime(t, stdin_content=req)
         rt.run_role("router", lambda e, _req: e)
         envs1 = _drain(sout)
         assert envs1[0]["event"]["type"] == "router.decision"
 
-        # Now exhaustion: the next call has no entry.
-        rt._stdin = io.StringIO(_line(_request_envelope("task-1")))
+        # Now exhaustion: attempt=2 -> index 1 but only 1 entry exists.
+        rt._stdin = io.StringIO(_line(_request_envelope("task-1", attempt=2)))
         sout2 = io.StringIO()
         rt._stdout = sout2
         with pytest.raises(SystemExit) as exc_info:
@@ -311,15 +313,15 @@ class TestTranscriptExhaustion:
             "validator", [{"passes": True, "feedback": "only", "criteria": []}]
         )
 
-        # First call — succeeds.
-        req1 = _line(_request_envelope("task-1"))
+        # First call — attempt=1 -> index 0, succeeds.
+        req1 = _line(_request_envelope("task-1", attempt=1))
         rt, sin, sout = _make_runtime(t, stdin_content=req1)
         rt.run_role("validator", lambda e, _req: e)
         envs1 = _drain(sout)
         assert envs1[0]["event"]["payload"]["feedback"] == "only"
 
-        # Second call — exhausted.
-        rt._stdin = io.StringIO(_line(_request_envelope("task-2")))
+        # Second call — attempt=2 -> index 1, exhausted.
+        rt._stdin = io.StringIO(_line(_request_envelope("task-2", attempt=2)))
         sout2 = io.StringIO()
         rt._stdout = sout2
         with pytest.raises(SystemExit):

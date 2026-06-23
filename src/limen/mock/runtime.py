@@ -112,8 +112,9 @@ class Runtime:
     def run_role(self, role: str, cognitive_fn) -> None:
         """Execute one invocation of *role*.
 
-        1. Load the Nth transcript entry for *role* (N is per-role monotonic).
-        2. Read the incoming request envelope from Go.
+        1. Read the incoming request envelope from Go.
+        2. Load the Nth transcript entry for *role* based on the ``attempt``
+           field from the request (attempt is 1-based; index = attempt - 1).
         3. For ``"worker"``: replay every ``tool_calls[]`` entry via
            ``request_tool``, blocking on each response, *before* calling
            the cognitive function.  For ``"router"`` / ``"validator"``:
@@ -126,33 +127,9 @@ class Runtime:
         process cleanly (exit code 0) so the Go adapter can surface the
         error via the envelope rather than via a nonzero exit.
         """
-        idx = self._indices.get(role, 0)
         entries = self._transcript.get(role, [])
 
-        # --- transcript exhaustion ------------------------------------------
-        if idx >= len(entries):
-            self._write_envelope(
-                {
-                    "kind": "event",
-                    "event": {
-                        "type": "error",
-                        "task_id": "",
-                        "payload": {
-                            "error": (
-                                f"Transcript exhausted for role {role!r} "
-                                f"at index {idx} (total entries: {len(entries)})"
-                            )
-                        },
-                        "timestamp": _now_ms(),
-                    },
-                }
-            )
-            sys.exit(0)
-
-        entry = entries[idx]
-        self._indices[role] = idx + 1
-
-        # --- read request ---------------------------------------------------
+        # --- read request first to get attempt number -----------------------
         request_env = self._read_envelope()
         if request_env is None:
             # NODE: design principle — errors surface via envelopes, not
@@ -174,6 +151,46 @@ class Runtime:
                 }
             )
             sys.exit(0)
+
+        # NODE: Use the attempt field from the Go request as the transcript
+        # index.  Each orchestrator call spawns a fresh subprocess, so we
+        # cannot rely on in-process monotonic counters.  The attempt is
+        # 1-based; the search path goes:
+        #   request["event"]["payload"]["attempt"]   (wrapped NDJSON envelope from Go)
+        #   request["attempt"]                       (flat dict used in unit tests)
+        attempt = 1  # fallback
+        try:
+            payload = request_env["event"]["payload"]
+            if isinstance(payload, dict) and "attempt" in payload:
+                attempt = int(payload["attempt"])
+        except (KeyError, TypeError, ValueError):
+            try:
+                attempt = int(request_env["attempt"])
+            except (KeyError, TypeError, ValueError):
+                pass
+        idx = attempt - 1
+
+        # --- transcript exhaustion ------------------------------------------
+        if idx < 0 or idx >= len(entries):
+            self._write_envelope(
+                {
+                    "kind": "event",
+                    "event": {
+                        "type": "error",
+                        "task_id": "",
+                        "payload": {
+                            "error": (
+                                f"Transcript exhausted for role {role!r} "
+                                f"at index {idx} (total entries: {len(entries)})"
+                            )
+                        },
+                        "timestamp": _now_ms(),
+                    },
+                }
+            )
+            sys.exit(0)
+
+        entry = entries[idx]
 
         # --- tool calls (worker only) ---------------------------------------
         # NODE: the runtime owns the bidirectional tool-call loop so
