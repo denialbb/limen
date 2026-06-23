@@ -3,7 +3,6 @@ package tabs
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -80,7 +79,7 @@ func (t *TimelineTab) handleEvent(ev bus.Event) {
 	if summary == "" {
 		return
 	}
-	appendLine(&t.lines, &t.viewport, eventTimestamp(ev), summary)
+	appendLine(&t.lines, &t.viewport, ev.Time(), summary)
 	if fin, ok := ev.(*bus.TaskFinalized); ok {
 		t.finalized = true
 		t.finalState = string(fin.FinalState)
@@ -193,43 +192,6 @@ func summarizeEvent(ev bus.Event) string {
 		return fmt.Sprintf("orchestrator error: %s", e.Error)
 	}
 	return ""
-}
-
-// eventTimestamp extracts the timestamp from an event. Falls back to a zero
-// time only if the event type is unrecognized; in practice every event in the
-// taxonomy carries a Timestamp field.
-func eventTimestamp(ev bus.Event) time.Time {
-	switch e := ev.(type) {
-	case *bus.TaskStateChanged:
-		return e.Timestamp
-	case *bus.ContextBuilt:
-		return e.Timestamp
-	case *bus.RouterExamining:
-		return e.Timestamp
-	case *bus.RouterDecisionEvent:
-		return e.Timestamp
-	case *bus.WorkerStarted:
-		return e.Timestamp
-	case *bus.WorkerToolCall:
-		return e.Timestamp
-	case *bus.WorkerFileEdit:
-		return e.Timestamp
-	case *bus.WorkerFinished:
-		return e.Timestamp
-	case *bus.ValidatorExamining:
-		return e.Timestamp
-	case *bus.ValidatorCriterionResult:
-		return e.Timestamp
-	case *bus.ValidatorVerdict:
-		return e.Timestamp
-	case *bus.ConflictDetected:
-		return e.Timestamp
-	case *bus.TaskFinalized:
-		return e.Timestamp
-	case *bus.OrchestratorError:
-		return e.Timestamp
-	}
-	return time.Time{}
 }
 
 // truncate clips s to at most maxLen bytes, appending an ellipsis when the

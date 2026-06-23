@@ -21,6 +21,7 @@ import (
 // pointer receivers; construct events with & (e.g. &bus.TaskStateChanged{...}).
 type Event interface {
 	kind() string
+	Time() time.Time
 }
 
 // EventBus is the subscription-based transport consumed by the TUI.
@@ -210,6 +211,7 @@ type TaskStateChanged struct {
 }
 
 func (*TaskStateChanged) kind() string { return "TaskStateChanged" }
+func (e *TaskStateChanged) Time() time.Time { return e.Timestamp }
 
 // ContextBuilt signals completion of context/retrieval assembly.
 type ContextBuilt struct {
@@ -220,6 +222,7 @@ type ContextBuilt struct {
 }
 
 func (*ContextBuilt) kind() string { return "ContextBuilt" }
+func (e *ContextBuilt) Time() time.Time { return e.Timestamp }
 
 // RouterExamining signals the router beginning its evaluation pass.
 type RouterExamining struct {
@@ -230,6 +233,7 @@ type RouterExamining struct {
 }
 
 func (*RouterExamining) kind() string { return "RouterExamining" }
+func (e *RouterExamining) Time() time.Time { return e.Timestamp }
 
 // RouterDecision is the routing decision type. It mirrors
 // orchestrator.RouterDecision and is duplicated here to avoid an import
@@ -259,6 +263,7 @@ type RouterDecisionEvent struct {
 }
 
 func (*RouterDecisionEvent) kind() string { return "RouterDecision" }
+func (e *RouterDecisionEvent) Time() time.Time { return e.Timestamp }
 
 // WorkerStarted signals the worker beginning a production pass.
 type WorkerStarted struct {
@@ -270,6 +275,7 @@ type WorkerStarted struct {
 }
 
 func (*WorkerStarted) kind() string { return "WorkerStarted" }
+func (e *WorkerStarted) Time() time.Time { return e.Timestamp }
 
 // WorkerToolCall signals a single tool invocation by the worker.
 type WorkerToolCall struct {
@@ -280,6 +286,7 @@ type WorkerToolCall struct {
 }
 
 func (*WorkerToolCall) kind() string { return "WorkerToolCall" }
+func (e *WorkerToolCall) Time() time.Time { return e.Timestamp }
 
 // WorkerFileEdit signals a file mutation by the worker.
 type WorkerFileEdit struct {
@@ -291,6 +298,7 @@ type WorkerFileEdit struct {
 }
 
 func (*WorkerFileEdit) kind() string { return "WorkerFileEdit" }
+func (e *WorkerFileEdit) Time() time.Time { return e.Timestamp }
 
 // WorkerFinished signals the worker completing its production pass.
 type WorkerFinished struct {
@@ -299,6 +307,7 @@ type WorkerFinished struct {
 }
 
 func (*WorkerFinished) kind() string { return "WorkerFinished" }
+func (e *WorkerFinished) Time() time.Time { return e.Timestamp }
 
 // ValidatorExamining signals the validator beginning its evaluation.
 type ValidatorExamining struct {
@@ -308,6 +317,7 @@ type ValidatorExamining struct {
 }
 
 func (*ValidatorExamining) kind() string { return "ValidatorExamining" }
+func (e *ValidatorExamining) Time() time.Time { return e.Timestamp }
 
 // ValidatorCriterionResult signals a single criterion's pass/fail result.
 type ValidatorCriterionResult struct {
@@ -319,6 +329,7 @@ type ValidatorCriterionResult struct {
 }
 
 func (*ValidatorCriterionResult) kind() string { return "ValidatorCriterionResult" }
+func (e *ValidatorCriterionResult) Time() time.Time { return e.Timestamp }
 
 // ValidatorVerdict signals the validator's overall verdict.
 type ValidatorVerdict struct {
@@ -329,6 +340,7 @@ type ValidatorVerdict struct {
 }
 
 func (*ValidatorVerdict) kind() string { return "ValidatorVerdict" }
+func (e *ValidatorVerdict) Time() time.Time { return e.Timestamp }
 
 // ConflictDetected signals git conflict regions in the worker's patch.
 type ConflictDetected struct {
@@ -338,6 +350,7 @@ type ConflictDetected struct {
 }
 
 func (*ConflictDetected) kind() string { return "ConflictDetected" }
+func (e *ConflictDetected) Time() time.Time { return e.Timestamp }
 
 // TaskFinalized signals a task reaching a terminal state.
 type TaskFinalized struct {
@@ -348,6 +361,7 @@ type TaskFinalized struct {
 }
 
 func (*TaskFinalized) kind() string { return "TaskFinalized" }
+func (e *TaskFinalized) Time() time.Time { return e.Timestamp }
 
 // OrchestratorError signals a non-fatal orchestrator error for TUI display.
 type OrchestratorError struct {
@@ -357,3 +371,4 @@ type OrchestratorError struct {
 }
 
 func (*OrchestratorError) kind() string { return "OrchestratorError" }
+func (e *OrchestratorError) Time() time.Time { return e.Timestamp }
