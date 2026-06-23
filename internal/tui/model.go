@@ -231,6 +231,8 @@ func (m Model) handleResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	m.worker.SetSize(msg.Width, contentHeight)
 	m.validator.SetSize(msg.Width, contentHeight)
 	m.timeline.SetSize(msg.Width, contentHeight)
+	// Store width for tab strip rendering (tab strip spans full width).
+	m.width = msg.Width
 	return m, nil
 }
 
@@ -324,7 +326,7 @@ func (m Model) View() string {
 	}
 
 	content := m.activeTabView()
-	return strings.Join([]string{m.header.View(), m.tabStrip.View(), content}, "\n")
+	return strings.Join([]string{m.header.View(), content, m.tabStrip.View(m.width)}, "\n")
 }
 
 // activeTabView returns the rendered content of the currently selected tab.
