@@ -1,6 +1,10 @@
 #!/bin/bash
 set -eo pipefail
 
+# Resolve the directory this script lives in so sibling scripts (verify_issue.sh)
+# are found regardless of the caller's working directory.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 RALPH_PORT="${RALPH_PORT:-4096}"
 SERVE_PID=""
 
@@ -235,12 +239,22 @@ EOF
 
     result=$(jq -r "$final_result" "$tmpfile" 2>/dev/null || echo "")
 
-    if ./verify_issue.sh "$task_file"; then
-        echo "Verify passed for $task_file; moving to issues/done/"
-        mv "$task_file" "issues/done/$(basename "$task_file")"
+    # The agent may have already moved the file to issues/done/. Resolve the
+    # actual path before verifying.
+    verify_file="$task_file"
+    if [ ! -f "$verify_file" ] && [ -f "issues/done/$(basename "$task_file")" ]; then
+        verify_file="issues/done/$(basename "$task_file")"
+    fi
+
+    if "$SCRIPT_DIR/verify_issue.sh" "$verify_file"; then
+        echo "Verify passed for $task_file; ensuring it's in issues/done/"
+        [ -f "$task_file" ] && mv "$task_file" "issues/done/$(basename "$task_file")"
         write_state "passed" "$task_file"
     else
-        echo "Verify FAILED for $task_file; leaving open for next iteration."
+        echo "Verify FAILED for $task_file; restoring from issues/done/ if needed."
+        if [ -f "issues/done/$(basename "$task_file")" ] && [ ! -f "$task_file" ]; then
+            mv "issues/done/$(basename "$task_file")" "$task_file"
+        fi
         write_state "failed" "$task_file"
     fi
 
