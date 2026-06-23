@@ -2,9 +2,7 @@ package tui
 
 import (
 	"fmt"
-	"strings"
 
-	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -13,27 +11,25 @@ import (
 )
 
 type Header struct {
-	taskID      string
-	state       state.TaskState
-	retryCount  int
-	expandCount int
-	spinner     spinner.Model
-	finalized   bool
-	width       int
+	taskID       string
+	state        state.TaskState
+	retryCount   int
+	expandCount  int
+	spinnerView  string
+	finalized    bool
+	width        int
 }
 
 func NewHeader(taskID string) *Header {
-	sp := spinner.New()
-	sp.Spinner = spinner.Dot
 	return &Header{
-		taskID: taskID,
-		state:  state.StateCreated,
-		spinner: sp,
+		taskID:      taskID,
+		state:       state.StateCreated,
+		spinnerView: "",
 	}
 }
 
-func (h *Header) SetSpinner(sp spinner.Model) {
-	h.spinner = sp
+func (h *Header) SetSpinnerView(view string) {
+	h.spinnerView = view
 }
 
 func (h *Header) SetWidth(width int) {
@@ -58,40 +54,45 @@ func (h *Header) Update(msg tea.Msg) {
 }
 
 func (h *Header) View() string {
-	brand, field, state, count, container := theme.HeaderStyles()
+	bar, brand, field, state, count, filler := theme.HeaderStyles(h.width)
 
-	stateName := string(h.state)
-	if stateName == "" {
-		stateName = "UNKNOWN"
-	}
-
-	spinnerOrDone := h.spinner.View()
+	stateName := h.stateName()
+	marker := h.spinnerView
 	if h.finalized {
-		spinnerOrDone = "done"
+		marker = "done"
 	}
 
-	leftGroup := strings.Join([]string{
+	left := lipgloss.JoinHorizontal(lipgloss.Top,
 		brand.Render("limen"),
-		field.Render("task " + h.taskID),
-	}, " ")
+		field.Render("task "+h.taskID),
+	)
 
-	rightGroup := strings.Join([]string{
+	right := lipgloss.JoinHorizontal(lipgloss.Top,
 		state.Render(stateName),
 		count.Render(fmt.Sprintf("r:%d e:%d", h.retryCount, h.expandCount)),
-		field.Render(spinnerOrDone),
-	}, " ")
+		field.Render(marker),
+	)
 
-	combined := leftGroup + " " + rightGroup
-
-	if h.width > 0 {
-		leftWidth := lipgloss.Width(leftGroup)
-		rightWidth := lipgloss.Width(rightGroup)
-		totalContent := leftWidth + 1 + rightWidth
-		if totalContent < h.width {
-			gap := strings.Repeat(" ", h.width-totalContent)
-			combined = leftGroup + gap + rightGroup
-		}
+	if h.width <= 0 {
+		return left + right
 	}
 
-	return container.Render(combined)
+	gapWidth := h.width - lipgloss.Width(left) - lipgloss.Width(right)
+	if gapWidth < 0 {
+		gapWidth = 0
+	}
+
+	return bar.Render(lipgloss.JoinHorizontal(lipgloss.Top,
+		left,
+		filler.Width(gapWidth).Render(""),
+		right,
+	))
+}
+
+func (h *Header) stateName() string {
+	name := string(h.state)
+	if name == "" {
+		return "UNKNOWN"
+	}
+	return name
 }

@@ -17,6 +17,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/denialbb/limen/internal/bus"
 	"github.com/denialbb/limen/internal/state"
@@ -49,17 +50,13 @@ type busChannelClosedMsg struct{}
 
 // Model is the top-level Bubble Tea model for the Limen interactive TUI.
 type Model struct {
-	// Configuration.
 	taskID string
 	bus    bus.EventBus
 
-	// State.
 	currentTab tabID
-	width       int
-	height      int
+	width      int
+	height     int
 
-	// Sub-components. Held as pointers so value-receiver Update methods on
-	// Model can still mutate their internal state.
 	header    *Header
 	tabStrip  *TabStrip
 	router    *tabs.RouterTab
@@ -67,13 +64,11 @@ type Model struct {
 	validator *tabs.ValidatorTab
 	timeline  *tabs.TimelineTab
 
-	// Event pump.
 	eventCh    <-chan bus.Event
 	spinner    spinner.Model
 	finalized  bool
 	finalState state.TaskState
 
-	// Quit flag, set when the user presses q or Ctrl+C.
 	quitting bool
 }
 
@@ -85,17 +80,17 @@ func NewModel(taskID string, eventBus bus.EventBus) Model {
 	sp.Spinner = spinner.Dot
 
 	return Model{
-		taskID:    taskID,
-		bus:       eventBus,
+		taskID:     taskID,
+		bus:        eventBus,
 		currentTab: tabRouter,
-		header:    NewHeader(taskID),
-		tabStrip:  NewTabStrip(),
-		router:    tabs.NewRouterTab(),
-		worker:    tabs.NewWorkerTab(),
-		validator: tabs.NewValidatorTab(),
-		timeline:  tabs.NewTimelineTab(),
-		eventCh:   eventBus.Subscribe(),
-		spinner:   sp,
+		header:     NewHeader(taskID),
+		tabStrip:   NewTabStrip(),
+		router:     tabs.NewRouterTab(),
+		worker:     tabs.NewWorkerTab(),
+		validator:  tabs.NewValidatorTab(),
+		timeline:   tabs.NewTimelineTab(),
+		eventCh:    eventBus.Subscribe(),
+		spinner:    sp,
 	}
 }
 
@@ -109,10 +104,6 @@ func (m Model) Init() tea.Cmd {
 // the event wrapped as a busEventMsg. When the channel is closed (orchestrator
 // teardown), it returns busChannelClosedMsg so the model can finalize without
 // spinning on a closed channel.
-//
-// NOTE: This function is invoked as a tea.Cmd by the Bubble Tea runtime on a
-// dedicated goroutine; the blocking receive here is intentional and does not
-// stall the UI.
 func waitForEvent(ch <-chan bus.Event) tea.Cmd {
 	return func() tea.Msg {
 		ev, ok := <-ch
@@ -123,9 +114,7 @@ func waitForEvent(ch <-chan bus.Event) tea.Cmd {
 	}
 }
 
-// Update dispatches every message to the appropriate handler. It returns the
-// updated model (value semantics) and a command chain that keeps the event
-// pump and spinner running.
+// Update dispatches every message to the appropriate handler.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
@@ -137,16 +126,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
-		m.header.SetSpinner(m.spinner)
+		m.header.SetSpinnerView(m.spinner.View())
 		return m, cmd
 
 	case busEventMsg:
 		return m.handleBusEvent(msg)
 
 	case busChannelClosedMsg:
-		// NOTE: Bus closed; drain is complete. Mark finalized if an explicit
-		// TaskFinalized event was never received (defensive: covers a producer
-		// that tears down without emitting the terminal event).
 		if !m.finalized {
 			m.finalized = true
 			setCurrentTab(&m, tabTimeline)
@@ -182,25 +168,15 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q", "ctrl+c":
 		m.quitting = true
 		return m, tea.Quit
-	default:
-		// TODO: "?" help overlay keybinding is not implemented; deferred per
-		// the TUI review. Implementing it requires a modal/overlay layer that
-		// suspends the active tab's rendering while open, which is out of
-		// scope for the v1 observe-only shell.
 	}
 	return m, nil
 }
 
-// setCurrentTab updates the active tab in both the model and the tab strip.
-// It takes a pointer so the value-typed currentTab field on Model is mutated
-// on the caller's copy rather than on a transient local.
 func setCurrentTab(m *Model, id tabID) {
 	m.currentTab = id
 	m.tabStrip.SetActive(int(id))
 }
 
-// forwardKeyToActiveTab sends a scroll key to the viewport of the active tab
-// so per-tab scroll position is preserved independently.
 func (m Model) forwardKeyToActiveTab(msg tea.KeyMsg) {
 	switch m.currentTab {
 	case tabRouter:
@@ -215,14 +191,16 @@ func (m Model) forwardKeyToActiveTab(msg tea.KeyMsg) {
 }
 
 // handleResize propagates window size changes to every sub-component. The
-// content viewport accounts for the two lines consumed by the header and the
-// tab strip.
+// content viewport accounts for the fixed-height chrome: header, separator,
+// and tab strip.
 func (m Model) handleResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	m.width = msg.Width
 	m.height = msg.Height
 
-	const reservedLines = 2 // header + tab strip
-	contentHeight := msg.Height - reservedLines
+	headerH := 1
+	sepH := 1 + 2*theme.SeparatorPadV
+	tabstripH := 1
+	contentHeight := msg.Height - headerH - sepH - tabstripH
 	if contentHeight < 1 {
 		contentHeight = 1
 	}
@@ -231,7 +209,6 @@ func (m Model) handleResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	m.worker.SetSize(msg.Width, contentHeight)
 	m.validator.SetSize(msg.Width, contentHeight)
 	m.timeline.SetSize(msg.Width, contentHeight)
-	m.width = msg.Width
 	m.header.SetWidth(msg.Width)
 	return m, nil
 }
@@ -251,8 +228,6 @@ func (m Model) handleResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleBusEvent(msg busEventMsg) (tea.Model, tea.Cmd) {
 	ev := msg.event
 	if ev == nil {
-		// NOTE: Defensive: the bus already drops nil publishes, but a stray
-		// nil here would panic downstream on kind(); keep pumping regardless.
 		return m, waitForEvent(m.eventCh)
 	}
 
@@ -261,7 +236,6 @@ func (m Model) handleBusEvent(msg busEventMsg) (tea.Model, tea.Cmd) {
 
 	switch ev := ev.(type) {
 	case *bus.TaskStateChanged:
-		// State transitions also flow to the header; no tab-specific action.
 
 	case *bus.ContextBuilt:
 		m.router.Update(tabs.EventMsg{Event: ev})
@@ -302,37 +276,49 @@ func (m Model) handleBusEvent(msg busEventMsg) (tea.Model, tea.Cmd) {
 		setCurrentTab(&m, tabTimeline)
 
 	case *bus.OrchestratorError:
-		// Routed to the Timeline tab only; it is the canonical "all activity"
-		// view and already received the event above. No dedicated error tab
-		// exists in the v1 observe-only shell.
 	}
 
-	// NOTE: The pump re-arms here even after TaskFinalized. This intentionally
-	// deviates from the design doc's literal "stops the event pump" wording:
-	// the orchestrator may still flush residual buffered events (e.g. a
-	// trailing WorkerFinished or a state echo) before closing the bus
-	// channel. Re-arming lets those drain cleanly; the pump stops for good
-	// when the channel close resolves to busChannelClosedMsg, at which point
-	// Update returns a nil command and the runtime idles.
 	return m, waitForEvent(m.eventCh)
 }
 
-// View renders the persistent header, the tab strip, and the content of the
-// active tab. The layout is vertical: header on top, tab strip beneath it,
-// then the tab content fills the remaining viewport.
+// View renders the header, separator, active tab content, and tab strip in a
+// vertical stack using lipgloss.JoinVertical for proper width alignment.
 func (m Model) View() string {
 	if m.quitting {
 		return ""
 	}
 
-	padV := theme.SeparatorPadV
-	sepLine := theme.SeparatorStyle().Render(strings.Repeat(theme.SeparatorRune, m.width))
-	sep := strings.Repeat("\n", padV) + sepLine + strings.Repeat("\n", padV)
-	content := m.activeTabView()
-	return strings.Join([]string{m.header.View(), sep, content, m.tabStrip.View(m.width)}, "\n")
+	sepWidth := m.width
+	if sepWidth <= 0 {
+		sepWidth = 0
+	}
+	sepLine := theme.SeparatorStyle().Render(strings.Repeat(theme.SeparatorRune, sepWidth))
+
+	blocks := []string{
+		m.header.View(),
+		sepLine,
+		m.activeTabView(),
+		m.tabStrip.View(m.width),
+	}
+
+	if theme.SeparatorPadV > 0 {
+		pad := strings.Repeat(" ", max(m.width, 1))
+		padded := make([]string, 0, len(blocks)+2*theme.SeparatorPadV)
+		padded = append(padded, blocks[0]) // header
+		for i := 0; i < theme.SeparatorPadV; i++ {
+			padded = append(padded, pad)
+		}
+		padded = append(padded, blocks[1]) // separator
+		for i := 0; i < theme.SeparatorPadV; i++ {
+			padded = append(padded, pad)
+		}
+		padded = append(padded, blocks[2:]...) // content + tabs
+		blocks = padded
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, blocks...)
 }
 
-// activeTabView returns the rendered content of the currently selected tab.
 func (m Model) activeTabView() string {
 	switch m.currentTab {
 	case tabRouter:
@@ -344,25 +330,14 @@ func (m Model) activeTabView() string {
 	case tabTimeline:
 		return m.timeline.View()
 	default:
-		// NOTE: Unreachable for a valid tabID; defensive fallback.
 		return ""
 	}
 }
 
-// Finalized reports whether the orchestrator has reached a terminal state
-// (or the bus was closed without an explicit finalize). Exposed for the CLI
-// layer to print a final summary after the program exits.
-func (m Model) Finalized() bool { return m.finalized }
-
-// FinalState returns the terminal state captured from TaskFinalized, or the
-// zero value if no finalize event was received.
+func (m Model) Finalized() bool       { return m.finalized }
 func (m Model) FinalState() state.TaskState { return m.finalState }
+func (m Model) TaskID() string        { return m.taskID }
 
-// TaskID returns the task ID the TUI is observing.
-func (m Model) TaskID() string { return m.taskID }
-
-// String returns a compact one-line summary of the final state, suitable for
-// post-program CLI output.
 func (m Model) String() string {
 	if !m.finalized {
 		return fmt.Sprintf("task %s: not finalized", m.taskID)
@@ -370,5 +345,4 @@ func (m Model) String() string {
 	return fmt.Sprintf("task %s: finalized state=%s", m.taskID, m.finalState)
 }
 
-// Compile-time interface check.
 var _ tea.Model = Model{}

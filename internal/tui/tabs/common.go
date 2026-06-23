@@ -37,13 +37,6 @@ type lineSetter interface {
 	SetContent(string)
 }
 
-// itoa returns the decimal string of n. Used in tab rendering paths that must
-// stay allocation-light; supports the small non-negative values produced by
-// the tab formatters. Out-of-range values fall back to strconv for correctness.
-func itoa(n int) string {
-	return strconv.Itoa(n)
-}
-
 // floatToText renders a float64 in a compact, fixed-point form suitable for
 // entropy scores and similar printed metrics.
 func floatToText(f float64) string {

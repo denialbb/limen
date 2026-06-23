@@ -6,29 +6,24 @@ import "github.com/charmbracelet/lipgloss"
 // rendering code must come from here.
 type Theme struct {
 	// Header constants.
-	HeaderBgColor      string
-	HeaderFgColor      string
-	HeaderPadH         int
-	HeaderFieldColor   string
-	HeaderStateColor   string
-	HeaderCountColor   string
+	HeaderBgColor    string
+	HeaderFgColor    string
+	HeaderPadH       int
+	HeaderFieldColor string
+	HeaderStateColor string
+	HeaderCountColor string
 
 	// Tab constants.
-	TabActiveBgColor   string
-	TabActiveFgColor   string
-	TabInactiveColor   string
-	TabPadH            int
-	TabPadBetween      int
-	TabBoundaryPad     int
+	TabActiveBgColor string
+	TabActiveFgColor string
+	TabInactiveColor string
+	TabPadH          int
+	TabBoundaryPad   int
 
 	// Separator constants.
-	SeparatorColor     string
-	SeparatorRune      string
-	SeparatorPadH      int
-	SeparatorPadV      int
-
-	// Content padding.
-	ContentPadLeft     int
+	SeparatorColor string
+	SeparatorRune  string
+	SeparatorPadV  int
 }
 
 func NewTheme() *Theme {
@@ -40,42 +35,62 @@ func NewTheme() *Theme {
 		HeaderStateColor: "213",
 		HeaderCountColor: "250",
 
-		TabActiveBgColor:   "63",
-		TabActiveFgColor:   "15",
-		TabInactiveColor:   "245",
-		TabPadH:            1,
-		TabPadBetween:      3,
-		TabBoundaryPad:     2,
+		TabActiveBgColor: "63",
+		TabActiveFgColor: "15",
+		TabInactiveColor: "245",
+		TabPadH:          1,
+		TabBoundaryPad:   2,
 
-		SeparatorColor:   "240",
-		SeparatorRune:    "─",
-		SeparatorPadH:    0,
-		SeparatorPadV:    1,
-
-		ContentPadLeft: 0,
+		SeparatorColor: "240",
+		SeparatorRune:  "─",
+		SeparatorPadV:  0,
 	}
 }
 
-// HeaderStyles builds the lipgloss styles for the header using the theme values.
-func (t *Theme) HeaderStyles() (brand, field, state, count, container lipgloss.Style) {
-	brand = lipgloss.NewStyle().
-		Bold(true).
-		Background(lipgloss.Color(t.HeaderBgColor)).
-		Foreground(lipgloss.Color(t.HeaderFgColor)).
+// HeaderStyles builds the lipgloss styles for the header bar. Every segment
+// carries the bar's Background so that nested ANSI resets from inner Render
+// calls do not break the full-width background fill. The bar style has Width
+// set so lipgloss pads any shortfall with bg-styled whitespace.
+//
+// The pattern follows lipgloss's own canonical status-bar example:
+//   - bar:    outer wrapper, Background + Width, fills any edge shortfall.
+//   - brand:  bold, high-contrast fg, bg from base, Padding for bg-covered spacing.
+//   - field:  normal fg, bg from base, Padding for bg-covered spacing.
+//   - state:  bold accent fg, bg from base, Padding for bg-covered spacing.
+//   - count:  muted fg, bg from base, Padding for bg-covered spacing.
+//   - filler: bg only, flexible Width to push the right group to the edge.
+//
+// Spacing between segments comes from Padding (which lipgloss colors with the
+// segment's own background), never from literal " " characters. This is the
+// critical rule: plain spaces inside a Background-wrapped string are NOT
+// bg-styled by lipgloss's renderer.
+func (t *Theme) HeaderStyles(width int) (bar, brand, field, state, count, filler lipgloss.Style) {
+	bg := lipgloss.Color(t.HeaderBgColor)
+
+	bar = lipgloss.NewStyle().
+		Background(bg).
+		Width(width)
+
+	base := lipgloss.NewStyle().
+		Background(bg).
 		Padding(0, t.HeaderPadH)
 
-	field = lipgloss.NewStyle().
+	brand = base.Copy().
+		Bold(true).
+		Foreground(lipgloss.Color(t.HeaderFgColor))
+
+	field = base.Copy().
 		Foreground(lipgloss.Color(t.HeaderFieldColor))
 
-	state = lipgloss.NewStyle().
+	state = base.Copy().
 		Bold(true).
 		Foreground(lipgloss.Color(t.HeaderStateColor))
 
-	count = lipgloss.NewStyle().
+	count = base.Copy().
 		Foreground(lipgloss.Color(t.HeaderCountColor))
 
-	container = lipgloss.NewStyle().
-		Background(lipgloss.Color(t.HeaderBgColor))
+	filler = lipgloss.NewStyle().
+		Background(bg)
 
 	return
 }

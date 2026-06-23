@@ -30,56 +30,47 @@ func (t *TabStrip) Active() int { return t.activeIdx }
 func (t *TabStrip) View(width int) string {
 	active, inactive := theme.TabStyles()
 
-	parts := make([]string, len(t.tabs))
+	rendered := make([]string, len(t.tabs))
+	totalWidth := 0
 	for i, label := range t.tabs {
+		style := inactive
 		if i == t.activeIdx {
-			parts[i] = active.Render(label)
-		} else {
-			parts[i] = inactive.Render(label)
+			style = active
 		}
+		rendered[i] = style.Render(label)
+		totalWidth += lipgloss.Width(rendered[i])
 	}
 
 	boundary := theme.TabBoundaryPad
-	gapBetween := theme.TabPadBetween
+	gapCount := len(rendered) - 1
 
-	if width <= 0 {
-		gap := strings.Repeat(" ", gapBetween)
-		inner := strings.Join(parts, gap)
-		return strings.Repeat(" ", boundary) + inner + strings.Repeat(" ", boundary)
+	if width <= 0 || gapCount <= 0 {
+		return strings.Repeat(" ", boundary) +
+			strings.Join(rendered, " ") +
+			strings.Repeat(" ", boundary)
 	}
 
-	tabWidths := make([]int, len(parts))
-	totalTabsWidth := 0
-	for i, p := range parts {
-		tabWidths[i] = lipgloss.Width(p)
-		totalTabsWidth += tabWidths[i]
+	available := width - totalWidth - 2*boundary
+	if available <= 0 {
+		return strings.Join(rendered, " ")
 	}
 
-	totalBoundaries := 2 * boundary
-	gapCount := len(parts) - 1
-	available := width - totalTabsWidth - totalBoundaries
-
-	baseGap := 0
-	if gapCount > 0 && available > gapCount {
-		baseGap = available / gapCount
-	}
+	baseGap := available / gapCount
+	extra := available % gapCount
 
 	var sb strings.Builder
 	sb.WriteString(strings.Repeat(" ", boundary))
-	for i, tab := range parts {
+	for i, tab := range rendered {
 		sb.WriteString(tab)
 		if i < gapCount {
-			gapSize := baseGap
-			if i < available%gapCount {
-				gapSize++
+			gap := baseGap
+			if i < extra {
+				gap++
 			}
-			if gapSize < 1 {
-				gapSize = 1
-			}
-			sb.WriteString(strings.Repeat(" ", gapSize))
+			sb.WriteString(strings.Repeat(" ", gap))
 		}
 	}
 	sb.WriteString(strings.Repeat(" ", boundary))
 
-	return lipgloss.Place(width, 1, lipgloss.Center, lipgloss.Center, sb.String())
+	return sb.String()
 }
