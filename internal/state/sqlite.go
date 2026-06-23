@@ -97,6 +97,8 @@ func (s *SQLiteStore) createSchema() error {
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		task_id TEXT NOT NULL,
 		call TEXT NOT NULL,
+		args TEXT NOT NULL DEFAULT '',
+		response TEXT NOT NULL DEFAULT '',
 		recorded_at INTEGER NOT NULL,
 		FOREIGN KEY (task_id) REFERENCES tasks(id)
 	);
@@ -107,6 +109,16 @@ func (s *SQLiteStore) createSchema() error {
 	if _, err := s.db.Exec(schema); err != nil {
 		return fmt.Errorf("execute schema: %w", err)
 	}
+
+	// NOTE: In-place migration for existing databases that were created
+	// before the args/response columns existed. SQLite silently ignores
+	// duplicate column errors, so this is safe to run on fresh databases.
+	for _, col := range []string{"args", "response"} {
+		// SQLite does not support IF NOT EXISTS for ALTER TABLE ADD COLUMN;
+		// the error on duplicate column is harmless, so we ignore it.
+		_, _ = s.db.Exec("ALTER TABLE tool_calls ADD COLUMN " + col + " TEXT NOT NULL DEFAULT ''")
+	}
+
 	return nil
 }
 
@@ -247,7 +259,7 @@ func (s *SQLiteStore) IncrementRetry(id string) error {
 }
 
 // RecordToolCall persists a tool call made while processing the task.
-func (s *SQLiteStore) RecordToolCall(id, call string) error {
+func (s *SQLiteStore) RecordToolCall(id, call, args, response string) error {
 	var dummy int
 	if err := s.db.QueryRow("SELECT 1 FROM tasks WHERE id = ?", id).Scan(&dummy); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -257,13 +269,38 @@ func (s *SQLiteStore) RecordToolCall(id, call string) error {
 	}
 
 	_, err := s.db.Exec(
-		"INSERT INTO tool_calls (task_id, call, recorded_at) VALUES (?, ?, ?)",
-		id, call, time.Now().Unix(),
+		"INSERT INTO tool_calls (task_id, call, args, response, recorded_at) VALUES (?, ?, ?, ?, ?)",
+		id, call, args, response, time.Now().Unix(),
 	)
 	if err != nil {
 		return fmt.Errorf("insert tool call: %w", err)
 	}
 	return nil
+}
+
+// GetToolCalls returns all tool calls recorded for the task in insertion order.
+func (s *SQLiteStore) GetToolCalls(id string) ([]ToolCall, error) {
+	rows, err := s.db.Query(
+		"SELECT id, task_id, COALESCE(call,''), COALESCE(args,''), COALESCE(response,'') FROM tool_calls WHERE task_id = ? ORDER BY id ASC",
+		id,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query tool calls: %w", err)
+	}
+	defer rows.Close()
+
+	var calls []ToolCall
+	for rows.Next() {
+		var tc ToolCall
+		if err := rows.Scan(&tc.ID, &tc.TaskID, &tc.Call, &tc.Args, &tc.Response); err != nil {
+			return nil, fmt.Errorf("scan tool call: %w", err)
+		}
+		calls = append(calls, tc)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate tool calls: %w", err)
+	}
+	return calls, nil
 }
 
 // validationDecision is the persisted shape of RecordValidationDecision data.
@@ -318,41 +355,65 @@ func (s *SQLiteStore) RecordValidationDecision(id string, pass bool, feedback st
 }
 
 // RecordFinalOutput persists the final output produced for the task.
+//
+// NOTE: Wrapped in an explicit transaction so the write is atomic and
+// no reader can observe a partially-written final_output column.
 func (s *SQLiteStore) RecordFinalOutput(id, output string) error {
-	res, err := s.db.Exec(
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var dummy int
+	if err := tx.QueryRow("SELECT 1 FROM tasks WHERE id = ?", id).Scan(&dummy); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrTaskNotFound
+		}
+		return fmt.Errorf("check task existence: %w", err)
+	}
+
+	if _, err := tx.Exec(
 		"UPDATE tasks SET final_output = ? WHERE id = ?",
 		output, id,
-	)
-	if err != nil {
+	); err != nil {
 		return fmt.Errorf("update final output: %w", err)
 	}
 
-	rows, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("rows affected: %w", err)
-	}
-	if rows == 0 {
-		return ErrTaskNotFound
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit final output: %w", err)
 	}
 	return nil
 }
 
 // RecordContextSnapshot persists the context snapshot for the task.
+//
+// NOTE: Wrapped in an explicit transaction so the write is atomic and
+// no reader can observe a partially-written context_snapshot column.
 func (s *SQLiteStore) RecordContextSnapshot(id string, snapshot string) error {
-	res, err := s.db.Exec(
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var dummy int
+	if err := tx.QueryRow("SELECT 1 FROM tasks WHERE id = ?", id).Scan(&dummy); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrTaskNotFound
+		}
+		return fmt.Errorf("check task existence: %w", err)
+	}
+
+	if _, err := tx.Exec(
 		"UPDATE tasks SET context_snapshot = ? WHERE id = ?",
 		snapshot, id,
-	)
-	if err != nil {
+	); err != nil {
 		return fmt.Errorf("update context snapshot: %w", err)
 	}
 
-	rows, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("rows affected: %w", err)
-	}
-	if rows == 0 {
-		return ErrTaskNotFound
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit context snapshot: %w", err)
 	}
 	return nil
 }

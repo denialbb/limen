@@ -78,7 +78,29 @@ func (m *mockStore) IncrementRetry(id string) error {
 	return nil
 }
 
-func (m *mockStore) RecordToolCall(id, call string) error {
+func (m *mockStore) RecordToolCall(id, call, args, response string) error {
+	return nil
+}
+
+func (m *mockStore) GetToolCalls(id string) ([]state.ToolCall, error) {
+	return nil, nil
+}
+
+// recordingMockStore wraps a mockStore and records tool-call invocations.
+type recordingMockStore struct {
+	mockStore
+	calls []toolCallRecord
+}
+
+type toolCallRecord struct {
+	taskID   string
+	call     string
+	args     string
+	response string
+}
+
+func (r *recordingMockStore) RecordToolCall(id, call, args, response string) error {
+	r.calls = append(r.calls, toolCallRecord{taskID: id, call: call, args: args, response: response})
 	return nil
 }
 

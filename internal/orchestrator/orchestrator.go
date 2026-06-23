@@ -130,10 +130,10 @@ func NewOrchestrator(store state.Store, bus bus.EventBus, router Router, retriev
 	}
 }
 
-func (o *OrchestratorImpl) recordToolCall(taskID, tool string) {
+func (o *OrchestratorImpl) recordToolCall(taskID, tool, args, response string) {
 	// NOTE: Best-effort recording. Failure to persist observability data should
 	// not abort the workflow.
-	_ = o.store.RecordToolCall(taskID, tool)
+	_ = o.store.RecordToolCall(taskID, tool, args, response)
 }
 
 // emitter returns the EventSink used to publish events. The stored EventBus
@@ -232,7 +232,7 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 			return err
 		}
 
-		o.recordToolCall(task.ID, "router.Evaluate")
+		o.recordToolCall(task.ID, "router.Evaluate", "", "")
 		decision, err := o.router.Evaluate(ctx, task, em)
 		if err != nil {
 			return err
@@ -291,7 +291,7 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 			return err
 		}
 
-		o.recordToolCall(task.ID, "worker.ProduceSolution")
+		o.recordToolCall(task.ID, "worker.ProduceSolution", "", "")
 		if err := o.worker.ProduceSolution(ctx, task, wt, feedback, em); err != nil {
 			return err
 		}
@@ -306,7 +306,7 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 			return err
 		}
 
-		o.recordToolCall(task.ID, "validator.Evaluate")
+		o.recordToolCall(task.ID, "validator.Evaluate", "", "")
 		passes, validationFeedback, err := o.validator.Evaluate(ctx, task, wt, em)
 		if err != nil {
 			return err

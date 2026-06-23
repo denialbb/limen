@@ -37,6 +37,15 @@ type Task struct {
 	ContextSnapshot    string
 }
 
+// ToolCall represents a single tool invocation recorded against a task.
+type ToolCall struct {
+	ID       int64
+	TaskID   string
+	Call     string
+	Args     string
+	Response string
+}
+
 // Store defines the contract for persisting and retrieving task state.
 // The Go Core is the exclusive owner of this state, utilizing SQLite.
 type Store interface {
@@ -56,7 +65,12 @@ type Store interface {
 	IncrementRetry(id string) error
 
 	// RecordToolCall persists a tool call made while processing the task.
-	RecordToolCall(id, call string) error
+	// args and response capture the full tool-call shape so the canonical
+	// log is not a lossy label-only trace.
+	RecordToolCall(id, call, args, response string) error
+
+	// GetToolCalls returns all tool calls recorded for the task in insertion order.
+	GetToolCalls(id string) ([]ToolCall, error)
 
 	// RecordValidationDecision persists the validation decision and feedback.
 	RecordValidationDecision(id string, pass bool, feedback string) error

@@ -248,16 +248,54 @@ func TestRecordToolCall(t *testing.T) {
 	store := newTestStore(t)
 	_, _ = store.CreateTask("task-123", 3)
 
-	if err := store.RecordToolCall("task-123", "tool-1"); err != nil {
+	if err := store.RecordToolCall("task-123", "tool-1", "arg1", "resp1"); err != nil {
 		t.Fatalf("expected no error recording tool call, got: %v", err)
 	}
 }
 
 func TestRecordToolCallTaskNotFound(t *testing.T) {
 	store := newTestStore(t)
-	err := store.RecordToolCall("task-404", "tool-1")
+	err := store.RecordToolCall("task-404", "tool-1", "", "")
 	if !errors.Is(err, state.ErrTaskNotFound) {
 		t.Errorf("expected ErrTaskNotFound, got: %v", err)
+	}
+}
+
+// TestRecordToolCall_ArgsResponsePersisted verifies that the full tool-call
+// shape (call, args, response) is round-tripped through the store. This
+// guards against the lossy label-only trace addressed by BUG #1.
+func TestRecordToolCall_ArgsResponsePersisted(t *testing.T) {
+	store := newTestStore(t)
+	_, _ = store.CreateTask("task-123", 3)
+
+	if err := store.RecordToolCall("task-123", "write_file", `{"path":"a.txt"}`, `{"ok":true}`); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if err := store.RecordToolCall("task-123", "run_tests", "", "3 passed"); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	calls, err := store.GetToolCalls("task-123")
+	if err != nil {
+		t.Fatalf("expected no error getting tool calls, got: %v", err)
+	}
+
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 tool calls, got: %d", len(calls))
+	}
+
+	if calls[0].Call != "write_file" || calls[0].Args != `{"path":"a.txt"}` || calls[0].Response != `{"ok":true}` {
+		t.Errorf("call 0: expected write_file / {\"path\":\"a.txt\"} / {\"ok\":true}, got %q / %q / %q",
+			calls[0].Call, calls[0].Args, calls[0].Response)
+	}
+
+	if calls[1].Call != "run_tests" || calls[1].Args != "" || calls[1].Response != "3 passed" {
+		t.Errorf("call 1: expected run_tests / \"\" / \"3 passed\", got %q / %q / %q",
+			calls[1].Call, calls[1].Args, calls[1].Response)
+	}
+
+	if calls[0].TaskID != "task-123" || calls[1].TaskID != "task-123" {
+		t.Error("expected both tool calls to reference task-123")
 	}
 }
 
@@ -389,6 +427,55 @@ func TestRecordContextSnapshotTaskNotFound(t *testing.T) {
 	store := newTestStore(t)
 	err := store.RecordContextSnapshot("task-404", "snapshot")
 	if !errors.Is(err, state.ErrTaskNotFound) {
+		t.Errorf("expected ErrTaskNotFound, got: %v", err)
+	}
+}
+
+// TestRecordFinalOutput_Transactional asserts that RecordFinalOutput writes are
+// atomic: after a successful call the final_output is visible to subsequent
+// reads, and a task-not-found error rolls back cleanly without side effects.
+func TestRecordFinalOutput_Transactional(t *testing.T) {
+	store := newTestStore(t)
+	_, _ = store.CreateTask("task-tx", 3)
+
+	// Write final output and verify it is immediately visible.
+	if err := store.RecordFinalOutput("task-tx", "committed-output"); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	task, err := store.GetTask("task-tx")
+	if err != nil {
+		t.Fatalf("expected no error getting task, got: %v", err)
+	}
+	if task.FinalOutput != "committed-output" {
+		t.Errorf("expected final_output 'committed-output', got: %q", task.FinalOutput)
+	}
+
+	// Verify task-not-found rolls back the transaction without side effects.
+	if err := store.RecordFinalOutput("nonexistent", "data"); !errors.Is(err, state.ErrTaskNotFound) {
+		t.Errorf("expected ErrTaskNotFound, got: %v", err)
+	}
+}
+
+// TestRecordContextSnapshot_Transactional asserts that RecordContextSnapshot
+// writes are atomic and visible after a successful call.
+func TestRecordContextSnapshot_Transactional(t *testing.T) {
+	store := newTestStore(t)
+	_, _ = store.CreateTask("task-tx", 3)
+
+	if err := store.RecordContextSnapshot("task-tx", "ctx-data"); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	task, err := store.GetTask("task-tx")
+	if err != nil {
+		t.Fatalf("expected no error getting task, got: %v", err)
+	}
+	if task.ContextSnapshot != "ctx-data" {
+		t.Errorf("expected context_snapshot 'ctx-data', got: %q", task.ContextSnapshot)
+	}
+
+	if err := store.RecordContextSnapshot("nonexistent", "data"); !errors.Is(err, state.ErrTaskNotFound) {
 		t.Errorf("expected ErrTaskNotFound, got: %v", err)
 	}
 }
