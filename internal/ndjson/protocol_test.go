@@ -406,7 +406,7 @@ func TestConstants_Distinct(t *testing.T) {
 	tools := []string{
 		ToolStateTransition, ToolStateGetTask, ToolStateRecordTool,
 		ToolGitProvision, ToolGitCheckConflict, ToolGitGetDiff,
-		ToolGitCommit, ToolGitDestroy,
+		ToolGitCommit, ToolGitDestroy, ToolFileWrite,
 	}
 	assertDistinct(t, events)
 	assertDistinct(t, tools)

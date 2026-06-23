@@ -66,6 +66,7 @@ const (
 	ToolGitGetDiff       = "git.get_diff"
 	ToolGitCommit        = "git.commit_worktree"
 	ToolGitDestroy       = "git.destroy_worktree"
+	ToolFileWrite        = "file.write"
 )
 
 // EventEnvelope is emitted by a Python client to stream live activity to Go.
