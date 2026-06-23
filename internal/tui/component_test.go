@@ -13,12 +13,14 @@ import (
 )
 
 // component_test.go verifies the value-receiver Bubble Tea component contract
-// directly: each sub-component's Init/Update/SetWidth/SetSize methods return a
-// NEW value rather than mutating the receiver in place, following the idiomatic
-// Bubble Tea / bubbles convention. Integration-level behavior (event routing,
-// tab switching, full-screen rendering) is covered by tui_test.go; this file
-// asserts the value-semantics invariant itself, which is what the recent
-// pointer->value refactor introduced.
+// for Header, TabStrip, RouterTab, and TimelineTab: Init returns nil, and
+// Update/SetWidth/SetSize return a NEW value rather than mutating the receiver
+// in place, following the idiomatic Bubble Tea / bubbles convention.
+// WorkerTab and ValidatorTab follow the same pattern as RouterTab and are
+// covered by the integration tests in tui_test.go. Integration-level behavior
+// (event routing, tab switching, full-screen rendering) is also in tui_test.go;
+// this file asserts the value-semantics invariant itself, which is what the
+// recent pointer->value refactor introduced.
 //
 // NOTE: Header and TabStrip live in package tui, so these tests can read their
 // unexported fields directly. The tab types (RouterTab, WorkerTab,
@@ -33,8 +35,8 @@ import (
 
 func TestHeaderInitReturnsNil(t *testing.T) {
 	h := NewHeader("test")
-	if h.Init() != nil {
-		t.Fatalf("Header.Init() = %v, want nil", h.Init())
+	if cmd := h.Init(); cmd != nil {
+		t.Fatalf("Header.Init() = %v, want nil", cmd)
 	}
 }
 
@@ -99,8 +101,8 @@ func TestHeaderUpdateIgnoresNonEventMsg(t *testing.T) {
 
 func TestTabStripInitReturnsNil(t *testing.T) {
 	ts := NewTabStrip()
-	if ts.Init() != nil {
-		t.Fatalf("TabStrip.Init() = %v, want nil", ts.Init())
+	if cmd := ts.Init(); cmd != nil {
+		t.Fatalf("TabStrip.Init() = %v, want nil", cmd)
 	}
 }
 
@@ -162,7 +164,7 @@ func TestTabInitReturnsNil(t *testing.T) {
 	}
 	for _, c := range cases {
 		if c.init != nil {
-			t.Fatalf("%s Init() = %v, want nil", c.name, c.init)
+			t.Errorf("%s Init() = %v, want nil", c.name, c.init)
 		}
 	}
 }
@@ -266,17 +268,16 @@ func TestTimelineUpdateReturnsNewValue(t *testing.T) {
 	}
 }
 
-// TestTimelineFinalizedReservesFooterSpace verifies that a finalization event
-// renders the completion footer as a single "FINAL: <state>" line when no
-// output reference was recorded.
+// TestTimelineFinalizedRendersSingleLineFooter verifies that a finalization
+// event renders the completion footer as a single "FINAL: <state>" line when
+// no output reference was recorded, and that the original tab is not mutated.
 //
 // NOTE: TimelineTab.footerLineCount is unexported in package tabs, so it cannot
-// be called directly from this package-level test. We instead verify its
-// observable consequence: the footer renders exactly one line ("FINAL:
-// COMMITTED") with no "output:" label, which is the rendering behavior that
-// footerLineCount==1 produces (a non-empty FinalOutputRef would add a second
-// "output:" line and make footerLineCount return 2).
-func TestTimelineFinalizedReservesFooterSpace(t *testing.T) {
+// be called directly from this package-level test. We verify the observable
+// rendering consequence: the footer renders exactly one line ("FINAL:
+// COMMITTED") with no "output:" label. Space reservation (viewport height
+// shrinking) is tested indirectly via TestCompletionFooter in tui_test.go.
+func TestTimelineFinalizedRendersSingleLineFooter(t *testing.T) {
 	tt := tabs.NewTimelineTab().SetSize(80, 24)
 	tt2, cmd := tt.Update(tabs.EventMsg{Event: &bus.TaskFinalized{
 		FinalState: state.StateCommitted,
@@ -313,9 +314,9 @@ func TestTimelineFinalizedReservesFooterSpace(t *testing.T) {
 // bus.Event.Time() interface method
 // ---------------------------------------------------------------------------
 
-// TestEventTimeMethod verifies that every event type's Time() returns its
-// embedded Timestamp, exercising the interface method polymorphically across
-// several concrete event types.
+// TestEventTimeMethod verifies that the Time() interface method returns the
+// embedded Timestamp, exercising it polymorphically across several concrete
+// event types (not an exhaustive test of all 14 types).
 func TestEventTimeMethod(t *testing.T) {
 	now := time.Now()
 	cases := []struct {
@@ -347,7 +348,7 @@ func TestEventTimeMethod(t *testing.T) {
 	}
 	for _, c := range cases {
 		if got := c.ev.Time(); !got.Equal(now) {
-			t.Fatalf("%s Time() = %v, want %v", c.name, got, now)
+			t.Errorf("%s Time() = %v, want %v", c.name, got, now)
 		}
 	}
 }
