@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "limen": {
-      "command": "python",
-      "args": ["src/limen/mcp_server/limen_mcp.py"]
-    }
-  }
-}
