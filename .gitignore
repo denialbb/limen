@@ -58,3 +58,4 @@ limen.db*
 /sandbox_repo/
 .ralph_session
 .ralph_session.err
+state.json
