@@ -13,7 +13,11 @@ from __future__ import annotations
 
 import sys
 
-from limen.mock.runtime import Runtime, load_transcript
+from limen.mock.runtime import (
+    Runtime,
+    _DEFAULT_TRANSCRIPT,
+    load_transcript,
+)
 
 
 def worker_fn(entry: dict, request: dict) -> dict:
@@ -26,10 +30,8 @@ def worker_fn(entry: dict, request: dict) -> dict:
 
 
 def main() -> None:
-    if len(sys.argv) < 2:
-        sys.stderr.write("usage: python -m limen.mock.worker <transcript_path>\n")
-        sys.exit(2)
-    transcript = load_transcript(sys.argv[1])
+    path = sys.argv[1] if len(sys.argv) > 1 else _DEFAULT_TRANSCRIPT
+    transcript = load_transcript(path)
     rt = Runtime(transcript)
     rt.run_role("worker", worker_fn)
 

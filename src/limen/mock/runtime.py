@@ -9,8 +9,15 @@ no subprocess needed.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
+
+# Default transcript path used by entrypoints when no argument is given.
+# Relative to the repo root (the Go side always launches from there).
+_DEFAULT_TRANSCRIPT = os.path.join(
+    os.path.dirname(__file__), "transcripts", "spike.json"
+)
 
 
 def load_transcript(path: str) -> dict:
@@ -148,9 +155,25 @@ class Runtime:
         # --- read request ---------------------------------------------------
         request_env = self._read_envelope()
         if request_env is None:
-            raise RuntimeError(
-                f"Unexpected EOF before request envelope for role {role!r}"
+            # NODE: design principle — errors surface via envelopes, not
+            # exit codes. Go sees an error event and acts accordingly.
+            self._write_envelope(
+                {
+                    "kind": "event",
+                    "event": {
+                        "type": "error",
+                        "task_id": "",
+                        "payload": {
+                            "error": (
+                                f"Unexpected EOF before request envelope "
+                                f"for role {role!r}"
+                            )
+                        },
+                        "timestamp": _now_ms(),
+                    },
+                }
             )
+            sys.exit(0)
 
         # --- tool calls (worker only) ---------------------------------------
         # NODE: the runtime owns the bidirectional tool-call loop so
