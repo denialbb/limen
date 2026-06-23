@@ -1,0 +1,42 @@
+{
+  "transcript_id": "spike-happy-retry",
+  "router": [
+    {
+      "decision": "proceed",
+      "rationale": "Task is well-bounded; no expansion needed.",
+      "complexity": "normal"
+    }
+  ],
+  "worker": [
+    {
+      "tool_calls": [
+        { "name": "file.write", "args": { "path": "solution.txt", "content": "initial buggy solution" } }
+      ],
+      "result": { "status": "complete", "summary": "Wrote solution.txt with an off-by-one bug." }
+    },
+    {
+      "tool_calls": [
+        { "name": "file.write", "args": { "path": "solution.txt", "content": "fixed solution" } }
+      ],
+      "result": { "status": "complete", "summary": "Wrote corrected solution.txt addressing validator feedback." }
+    }
+  ],
+  "validator": [
+    {
+      "passes": false,
+      "feedback": "Solution contains an off-by-one bug in the loop bound. Please fix and resubmit.",
+      "criteria": [
+        { "name": "compiles", "passes": true, "detail": "OK" },
+        { "name": "correctness", "passes": false, "detail": "Off-by-one at line 3." }
+      ]
+    },
+    {
+      "passes": true,
+      "feedback": "Solution is correct.",
+      "criteria": [
+        { "name": "compiles", "passes": true, "detail": "OK" },
+        { "name": "correctness", "passes": true, "detail": "All checks pass." }
+      ]
+    }
+  ]
+}
