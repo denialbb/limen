@@ -18,14 +18,17 @@ type ValidatorTab struct {
 }
 
 // NewValidatorTab constructs an empty ValidatorTab with a default 1x1 footprint.
-func NewValidatorTab() *ValidatorTab {
-	v := &ValidatorTab{}
+func NewValidatorTab() ValidatorTab {
+	v := ValidatorTab{}
 	v.viewport = viewport.New(1, 1)
 	return v
 }
 
+// Init satisfies the tea.Model surface; the tab has no async work of its own.
+func (v ValidatorTab) Init() tea.Cmd { return nil }
+
 // SetSize resizes the Validator viewport.
-func (v *ValidatorTab) SetSize(width, height int) {
+func (v ValidatorTab) SetSize(width, height int) ValidatorTab {
 	if width < 1 {
 		width = 1
 	}
@@ -34,21 +37,24 @@ func (v *ValidatorTab) SetSize(width, height int) {
 	}
 	v.viewport.Width = width
 	v.viewport.Height = height
+	return v
 }
 
 // Update ingests either an EventMsg carrying a validator-relevant bus event or
 // a tea.KeyMsg for scroll.
-func (v *ValidatorTab) Update(msg tea.Msg) {
+func (v ValidatorTab) Update(msg tea.Msg) (ValidatorTab, tea.Cmd) {
 	switch m := msg.(type) {
 	case EventMsg:
-		v.handleEvent(m.Event)
+		v = v.handleEvent(m.Event)
 	case tea.KeyMsg:
 		v.viewport, _ = v.viewport.Update(m)
 	}
+	return v, nil
 }
 
-// handleEvent formats and appends a validator-relevant event line.
-func (v *ValidatorTab) handleEvent(ev bus.Event) {
+// handleEvent formats and appends a validator-relevant event line. It returns
+// the modified tab value so Update can thread it back under value semantics.
+func (v ValidatorTab) handleEvent(ev bus.Event) ValidatorTab {
 	switch e := ev.(type) {
 	case *bus.ValidatorExamining:
 		appendLine(&v.lines, &v.viewport, e.Timestamp,
@@ -66,6 +72,7 @@ func (v *ValidatorTab) handleEvent(ev bus.Event) {
 	case *bus.ValidatorVerdict:
 		appendLine(&v.lines, &v.viewport, e.Timestamp, formatVerdict(e))
 	}
+	return v
 }
 
 // formatVerdict renders the overall verdict line as "Verdict: PASS — feedback".
@@ -82,7 +89,7 @@ func formatVerdict(e *bus.ValidatorVerdict) string {
 }
 
 // View renders the accumulated lines through the viewport.
-func (v *ValidatorTab) View() string {
+func (v ValidatorTab) View() string {
 	if v.viewport.Height <= 0 {
 		return ""
 	}
@@ -90,7 +97,7 @@ func (v *ValidatorTab) View() string {
 }
 
 // Lines returns a defensive copy of the accumulated output lines.
-func (v *ValidatorTab) Lines() []string {
+func (v ValidatorTab) Lines() []string {
 	out := make([]string, len(v.lines))
 	copy(out, v.lines)
 	return out

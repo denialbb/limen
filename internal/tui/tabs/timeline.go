@@ -26,24 +26,27 @@ var footerStyle = lipgloss.NewStyle().
 // the full sequence including state-machine transitions and the final
 // terminal event.
 type TimelineTab struct {
-	viewport        viewport.Model
-	lines           []string
-	finalState      string
-	finalOutputRef  string
-	finalized       bool
+	viewport       viewport.Model
+	lines          []string
+	finalState     string
+	finalOutputRef string
+	finalized      bool
 }
 
 // NewTimelineTab constructs an empty TimelineTab with a default 1x1 footprint.
-func NewTimelineTab() *TimelineTab {
-	t := &TimelineTab{}
+func NewTimelineTab() TimelineTab {
+	t := TimelineTab{}
 	t.viewport = viewport.New(1, 1)
 	return t
 }
 
+// Init satisfies the tea.Model surface; the tab has no async work of its own.
+func (t TimelineTab) Init() tea.Cmd { return nil }
+
 // SetSize resizes the Timeline viewport. When the tab is finalized, the
 // completion footer's line count is reserved so the viewport never overdraws
 // it.
-func (t *TimelineTab) SetSize(width, height int) {
+func (t TimelineTab) SetSize(width, height int) TimelineTab {
 	if width < 1 {
 		width = 1
 	}
@@ -56,28 +59,31 @@ func (t *TimelineTab) SetSize(width, height int) {
 	}
 	t.viewport.Width = width
 	t.viewport.Height = height
+	return t
 }
 
 // Update ingests either an EventMsg or a scroll key. Every event is appended
 // as a one-line summary; TaskFinalized additionally records the terminal
 // state so a footer can surface it after the event pump stops.
-func (t *TimelineTab) Update(msg tea.Msg) {
+func (t TimelineTab) Update(msg tea.Msg) (TimelineTab, tea.Cmd) {
 	switch m := msg.(type) {
 	case EventMsg:
-		t.handleEvent(m.Event)
+		t = t.handleEvent(m.Event)
 	case tea.KeyMsg:
 		t.viewport, _ = t.viewport.Update(m)
 	}
+	return t, nil
 }
 
-// handleEvent formats and appends a single one-line event summary.
-func (t *TimelineTab) handleEvent(ev bus.Event) {
+// handleEvent formats and appends a single one-line event summary. It returns
+// the modified tab value so Update can thread it back under value semantics.
+func (t TimelineTab) handleEvent(ev bus.Event) TimelineTab {
 	if ev == nil {
-		return
+		return t
 	}
 	summary := summarizeEvent(ev)
 	if summary == "" {
-		return
+		return t
 	}
 	appendLine(&t.lines, &t.viewport, ev.Time(), summary)
 	if fin, ok := ev.(*bus.TaskFinalized); ok {
@@ -86,25 +92,27 @@ func (t *TimelineTab) handleEvent(ev bus.Event) {
 		t.finalOutputRef = fin.FinalOutputRef
 		// Reserve vertical space for the completion footer now that it will
 		// render, so the viewport body does not overdraw it.
-		t.reserveFooterSpace()
+		t = t.reserveFooterSpace()
 	}
+	return t
 }
 
 // reserveFooterSpace shrinks the viewport by the footer's line count. Called
 // once on finalization (after the viewport was already sized to the full
 // content area) and reused by SetSize on subsequent resizes.
-func (t *TimelineTab) reserveFooterSpace() {
+func (t TimelineTab) reserveFooterSpace() TimelineTab {
 	h := t.viewport.Height - t.footerLineCount()
 	if h < 1 {
 		h = 1
 	}
 	t.viewport.Height = h
+	return t
 }
 
 // footerLineCount reports the number of lines the completion footer occupies:
 // one line for the final state, plus a second line for the output reference
 // when one was recorded. Returns zero before finalization.
-func (t *TimelineTab) footerLineCount() int {
+func (t TimelineTab) footerLineCount() int {
 	if !t.finalized {
 		return 0
 	}
@@ -116,7 +124,7 @@ func (t *TimelineTab) footerLineCount() int {
 
 // renderFooter produces the styled completion footer shown beneath the
 // viewport body once the task has reached a terminal state.
-func (t *TimelineTab) renderFooter() string {
+func (t TimelineTab) renderFooter() string {
 	stateName := t.finalState
 	if stateName == "" {
 		stateName = "UNKNOWN"
@@ -130,7 +138,7 @@ func (t *TimelineTab) renderFooter() string {
 
 // View renders the accumulated timeline through the viewport, and appends
 // the completion footer beneath it once the task has finalized.
-func (t *TimelineTab) View() string {
+func (t TimelineTab) View() string {
 	if t.viewport.Height <= 0 {
 		// Defensive: tabs are expected to be sized before being viewed.
 		return ""
@@ -143,7 +151,7 @@ func (t *TimelineTab) View() string {
 }
 
 // Lines returns a defensive copy of the accumulated timeline lines.
-func (t *TimelineTab) Lines() []string {
+func (t TimelineTab) Lines() []string {
 	out := make([]string, len(t.lines))
 	copy(out, t.lines)
 	return out

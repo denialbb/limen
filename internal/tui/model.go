@@ -57,12 +57,16 @@ type Model struct {
 	width      int
 	height     int
 
-	header    *Header
-	tabStrip  *TabStrip
-	router    *tabs.RouterTab
-	worker    *tabs.WorkerTab
-	validator *tabs.ValidatorTab
-	timeline  *tabs.TimelineTab
+	// Sub-components are held by value. Each follows the bubbles value
+	// convention: Update returns a modified value plus a tea.Cmd, so the
+	// value-receiver methods on Model can rebuild themselves by reassigning
+	// the updated sub-component.
+	header    Header
+	tabStrip  TabStrip
+	router    tabs.RouterTab
+	worker    tabs.WorkerTab
+	validator tabs.ValidatorTab
+	timeline  tabs.TimelineTab
 
 	eventCh    <-chan bus.Event
 	spinner    spinner.Model
@@ -126,7 +130,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
-		m.header.SetSpinnerView(m.spinner.View())
+		m.header = m.header.SetSpinnerView(m.spinner.View())
 		return m, cmd
 
 	case busEventMsg:
@@ -162,9 +166,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		prev := (int(m.currentTab) - 1 + int(tabCount)) % int(tabCount)
 		setCurrentTab(&m, tabID(prev))
 	case "j", "down":
-		m.forwardKeyToActiveTab(msg)
+		return m.forwardKeyToActiveTab(msg)
 	case "k", "up":
-		m.forwardKeyToActiveTab(msg)
+		return m.forwardKeyToActiveTab(msg)
 	case "q", "ctrl+c":
 		m.quitting = true
 		return m, tea.Quit
@@ -172,22 +176,30 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// setCurrentTab is the single mutator for the active tab index. It writes
+// both currentTab and the tab strip's active index on a *Model so callers can
+// use it mid-method without losing the SetActive reassignment.
 func setCurrentTab(m *Model, id tabID) {
 	m.currentTab = id
-	m.tabStrip.SetActive(int(id))
+	m.tabStrip = m.tabStrip.SetActive(int(id))
 }
 
-func (m Model) forwardKeyToActiveTab(msg tea.KeyMsg) {
+// forwardKeyToActiveTab dispatches a scroll key to the active viewport. It
+// returns the new Model and a (typically nil) command so the result can be
+// threaded straight back through Update.
+func (m Model) forwardKeyToActiveTab(msg tea.KeyMsg) (Model, tea.Cmd) {
+	var cmd tea.Cmd
 	switch m.currentTab {
 	case tabRouter:
-		m.router.Update(msg)
+		m.router, cmd = m.router.Update(msg)
 	case tabWorker:
-		m.worker.Update(msg)
+		m.worker, cmd = m.worker.Update(msg)
 	case tabValidator:
-		m.validator.Update(msg)
+		m.validator, cmd = m.validator.Update(msg)
 	case tabTimeline:
-		m.timeline.Update(msg)
+		m.timeline, cmd = m.timeline.Update(msg)
 	}
+	return m, cmd
 }
 
 // handleResize propagates window size changes to every sub-component. The
@@ -205,12 +217,12 @@ func (m Model) handleResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 		contentHeight = 1
 	}
 
-	m.router.SetSize(msg.Width, contentHeight)
-	m.worker.SetSize(msg.Width, contentHeight)
-	m.validator.SetSize(msg.Width, contentHeight)
-	m.timeline.SetSize(msg.Width, contentHeight)
-	m.header.SetWidth(msg.Width)
-	m.tabStrip.SetSize(msg.Width)
+	m.router = m.router.SetSize(msg.Width, contentHeight)
+	m.worker = m.worker.SetSize(msg.Width, contentHeight)
+	m.validator = m.validator.SetSize(msg.Width, contentHeight)
+	m.timeline = m.timeline.SetSize(msg.Width, contentHeight)
+	m.header = m.header.SetWidth(msg.Width)
+	m.tabStrip = m.tabStrip.SetSize(msg.Width)
 	return m, nil
 }
 
@@ -232,44 +244,46 @@ func (m Model) handleBusEvent(msg busEventMsg) (tea.Model, tea.Cmd) {
 		return m, waitForEvent(m.eventCh)
 	}
 
-	m.header.Update(ev)
-	m.timeline.Update(tabs.EventMsg{Event: ev})
+	// The header and timeline both see every event; their Update methods
+	// ignore anything they don't care about.
+	m.header, _ = m.header.Update(tabs.EventMsg{Event: ev})
+	m.timeline, _ = m.timeline.Update(tabs.EventMsg{Event: ev})
 
 	switch ev := ev.(type) {
 	case *bus.TaskStateChanged:
 
 	case *bus.ContextBuilt:
-		m.router.Update(tabs.EventMsg{Event: ev})
+		m.router, _ = m.router.Update(tabs.EventMsg{Event: ev})
 
 	case *bus.RouterExamining:
-		m.router.Update(tabs.EventMsg{Event: ev})
+		m.router, _ = m.router.Update(tabs.EventMsg{Event: ev})
 
 	case *bus.RouterDecisionEvent:
-		m.router.Update(tabs.EventMsg{Event: ev})
+		m.router, _ = m.router.Update(tabs.EventMsg{Event: ev})
 
 	case *bus.WorkerStarted:
-		m.worker.Update(tabs.EventMsg{Event: ev})
+		m.worker, _ = m.worker.Update(tabs.EventMsg{Event: ev})
 
 	case *bus.WorkerToolCall:
-		m.worker.Update(tabs.EventMsg{Event: ev})
+		m.worker, _ = m.worker.Update(tabs.EventMsg{Event: ev})
 
 	case *bus.WorkerFileEdit:
-		m.worker.Update(tabs.EventMsg{Event: ev})
+		m.worker, _ = m.worker.Update(tabs.EventMsg{Event: ev})
 
 	case *bus.WorkerFinished:
-		m.worker.Update(tabs.EventMsg{Event: ev})
+		m.worker, _ = m.worker.Update(tabs.EventMsg{Event: ev})
 
 	case *bus.ConflictDetected:
-		m.worker.Update(tabs.EventMsg{Event: ev})
+		m.worker, _ = m.worker.Update(tabs.EventMsg{Event: ev})
 
 	case *bus.ValidatorExamining:
-		m.validator.Update(tabs.EventMsg{Event: ev})
+		m.validator, _ = m.validator.Update(tabs.EventMsg{Event: ev})
 
 	case *bus.ValidatorCriterionResult:
-		m.validator.Update(tabs.EventMsg{Event: ev})
+		m.validator, _ = m.validator.Update(tabs.EventMsg{Event: ev})
 
 	case *bus.ValidatorVerdict:
-		m.validator.Update(tabs.EventMsg{Event: ev})
+		m.validator, _ = m.validator.Update(tabs.EventMsg{Event: ev})
 
 	case *bus.TaskFinalized:
 		m.finalized = true

@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -12,27 +13,35 @@ type TabStrip struct {
 	width     int
 }
 
-func NewTabStrip() *TabStrip {
-	return &TabStrip{
+func NewTabStrip() TabStrip {
+	return TabStrip{
 		tabs:      []string{"Router", "Worker", "Validator", "Timeline"},
 		activeIdx: 0,
 	}
 }
 
-func (t *TabStrip) SetActive(idx int) {
+// Init satisfies the tea.Model surface; the tab strip has no async work of its
+// own, so it returns a nil command.
+func (t TabStrip) Init() tea.Cmd { return nil }
+
+// SetActive returns a copy with activeIdx updated to idx (clamped to the
+// valid range; out-of-range indices are a no-op).
+func (t TabStrip) SetActive(idx int) TabStrip {
 	if idx < 0 || idx >= len(t.tabs) {
-		return
+		return t
 	}
 	t.activeIdx = idx
+	return t
 }
 
-func (t *TabStrip) Active() int { return t.activeIdx }
+func (t TabStrip) Active() int { return t.activeIdx }
 
-func (t *TabStrip) SetSize(width int) {
+func (t TabStrip) SetSize(width int) TabStrip {
 	t.width = width
+	return t
 }
 
-func (t *TabStrip) View() string {
+func (t TabStrip) View() string {
 	active, inactive := theme.TabStyles()
 
 	rendered := make([]string, len(t.tabs))

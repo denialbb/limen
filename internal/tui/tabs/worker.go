@@ -17,14 +17,17 @@ type WorkerTab struct {
 }
 
 // NewWorkerTab constructs an empty WorkerTab with a default 1x1 footprint.
-func NewWorkerTab() *WorkerTab {
-	w := &WorkerTab{}
+func NewWorkerTab() WorkerTab {
+	w := WorkerTab{}
 	w.viewport = viewport.New(1, 1)
 	return w
 }
 
+// Init satisfies the tea.Model surface; the tab has no async work of its own.
+func (w WorkerTab) Init() tea.Cmd { return nil }
+
 // SetSize resizes the Worker viewport.
-func (w *WorkerTab) SetSize(width, height int) {
+func (w WorkerTab) SetSize(width, height int) WorkerTab {
 	if width < 1 {
 		width = 1
 	}
@@ -33,21 +36,24 @@ func (w *WorkerTab) SetSize(width, height int) {
 	}
 	w.viewport.Width = width
 	w.viewport.Height = height
+	return w
 }
 
 // Update ingests either an EventMsg carrying a worker-relevant bus event or a
 // tea.KeyMsg for scroll.
-func (w *WorkerTab) Update(msg tea.Msg) {
+func (w WorkerTab) Update(msg tea.Msg) (WorkerTab, tea.Cmd) {
 	switch m := msg.(type) {
 	case EventMsg:
-		w.handleEvent(m.Event)
+		w = w.handleEvent(m.Event)
 	case tea.KeyMsg:
 		w.viewport, _ = w.viewport.Update(m)
 	}
+	return w, nil
 }
 
-// handleEvent formats and appends a worker-relevant event line.
-func (w *WorkerTab) handleEvent(ev bus.Event) {
+// handleEvent formats and appends a worker-relevant event line. It returns
+// the modified tab value so Update can thread it back under value semantics.
+func (w WorkerTab) handleEvent(ev bus.Event) WorkerTab {
 	switch e := ev.(type) {
 	case *bus.WorkerStarted:
 		body := fmt.Sprintf(
@@ -66,6 +72,7 @@ func (w *WorkerTab) handleEvent(ev bus.Event) {
 		body := fmt.Sprintf("Conflict detected: %d region(s)", len(e.Regions))
 		appendLine(&w.lines, &w.viewport, e.Timestamp, body)
 	}
+	return w
 }
 
 // baseCommitLabel renders the base commit short form, falling back to "HEAD"
@@ -78,7 +85,7 @@ func baseCommitLabel(base string) string {
 }
 
 // View renders the accumulated lines through the viewport.
-func (w *WorkerTab) View() string {
+func (w WorkerTab) View() string {
 	if w.viewport.Height <= 0 {
 		return ""
 	}
@@ -86,7 +93,7 @@ func (w *WorkerTab) View() string {
 }
 
 // Lines returns a defensive copy of the accumulated output lines.
-func (w *WorkerTab) Lines() []string {
+func (w WorkerTab) Lines() []string {
 	out := make([]string, len(w.lines))
 	copy(out, w.lines)
 	return out

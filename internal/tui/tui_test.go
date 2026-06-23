@@ -60,9 +60,17 @@ func TestNewModel(t *testing.T) {
 	if m.currentTab != tabRouter {
 		t.Fatalf("currentTab = %d, want %d (Router)", m.currentTab, tabRouter)
 	}
-	if m.header == nil || m.tabStrip == nil || m.router == nil ||
-		m.worker == nil || m.validator == nil || m.timeline == nil {
-		t.Fatalf("sub-components not initialized")
+	// Sub-components are value-typed now, so they can never be nil. Verify
+	// initialization through their observable state instead.
+	if m.header.taskID != "task-1" {
+		t.Fatalf("header not initialized: taskID = %q", m.header.taskID)
+	}
+	if m.tabStrip.Active() != 0 {
+		t.Fatalf("tab strip not initialized: active = %d", m.tabStrip.Active())
+	}
+	if len(m.router.Lines()) != 0 || len(m.worker.Lines()) != 0 ||
+		len(m.validator.Lines()) != 0 || len(m.timeline.Lines()) != 0 {
+		t.Fatalf("tab components should start empty")
 	}
 	if m.eventCh == nil {
 		t.Fatalf("eventCh not subscribed")

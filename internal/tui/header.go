@@ -8,52 +8,63 @@ import (
 
 	"github.com/denialbb/limen/internal/bus"
 	"github.com/denialbb/limen/internal/state"
+	"github.com/denialbb/limen/internal/tui/tabs"
 )
 
 type Header struct {
-	taskID       string
-	state        state.TaskState
-	retryCount   int
-	expandCount  int
-	spinnerView  string
-	finalized    bool
-	width        int
+	taskID      string
+	state       state.TaskState
+	retryCount  int
+	expandCount int
+	spinnerView string
+	finalized   bool
+	width       int
 }
 
-func NewHeader(taskID string) *Header {
-	return &Header{
+func NewHeader(taskID string) Header {
+	return Header{
 		taskID:      taskID,
 		state:       state.StateCreated,
 		spinnerView: "",
 	}
 }
 
-func (h *Header) SetSpinnerView(view string) {
+// Init satisfies the tea.Model surface; the header has no async work of its
+// own, so it returns a nil command.
+func (h Header) Init() tea.Cmd { return nil }
+
+func (h Header) SetSpinnerView(view string) Header {
 	h.spinnerView = view
+	return h
 }
 
-func (h *Header) SetWidth(width int) {
+func (h Header) SetWidth(width int) Header {
 	h.width = width
+	return h
 }
 
-func (h *Header) Update(msg tea.Msg) {
-	switch ev := msg.(type) {
-	case *bus.TaskStateChanged:
-		h.state = ev.To
-
-	case *bus.RouterDecisionEvent:
-		h.expandCount = ev.ExpandCount
-
-	case *bus.WorkerStarted:
-		h.retryCount = ev.Retry
-
-	case *bus.TaskFinalized:
-		h.finalized = true
-		h.state = ev.FinalState
+// Update reacts to TUI lifecycle events wrapped as tabs.EventMsg. The inner
+// bus.Event payload is unwrapped and type-switched so the header stays in sync
+// with the orchestrator state machine.
+func (h Header) Update(msg tea.Msg) (Header, tea.Cmd) {
+	switch m := msg.(type) {
+	case tabs.EventMsg:
+		switch ev := m.Event.(type) {
+		case *bus.TaskStateChanged:
+			h.state = ev.To
+		case *bus.RouterDecisionEvent:
+			h.expandCount = ev.ExpandCount
+		case *bus.WorkerStarted:
+			h.retryCount = ev.Retry
+		case *bus.TaskFinalized:
+			h.finalized = true
+			h.state = ev.FinalState
+		}
 	}
+	return h, nil
 }
 
-func (h *Header) View() string {
+func (h Header) View() string {
 	bar, brand, field, state, count, filler := theme.HeaderStyles(h.width)
 
 	stateName := h.stateName()
@@ -89,7 +100,7 @@ func (h *Header) View() string {
 	))
 }
 
-func (h *Header) stateName() string {
+func (h Header) stateName() string {
 	name := string(h.state)
 	if name == "" {
 		return "UNKNOWN"

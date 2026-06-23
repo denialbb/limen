@@ -19,15 +19,19 @@ type RouterTab struct {
 // NewRouterTab constructs an empty RouterTab. The viewport is given a
 // default 1x1 footprint; the top-level model resizes it via SetSize as soon
 // as the first tea.WindowSizeMsg arrives.
-func NewRouterTab() *RouterTab {
-	r := &RouterTab{}
+func NewRouterTab() RouterTab {
+	r := RouterTab{}
 	r.viewport = viewport.New(1, 1)
 	return r
 }
 
+// Init satisfies the tea.Model surface; the tab has no async work of its own,
+// so it returns a nil command.
+func (r RouterTab) Init() tea.Cmd { return nil }
+
 // SetSize resizes the Router viewport. Degenerate sizes are clamped so a
 // zero-height resize (e.g. during teardown) never panics.
-func (r *RouterTab) SetSize(width, height int) {
+func (r RouterTab) SetSize(width, height int) RouterTab {
 	if width < 1 {
 		width = 1
 	}
@@ -36,23 +40,27 @@ func (r *RouterTab) SetSize(width, height int) {
 	}
 	r.viewport.Width = width
 	r.viewport.Height = height
+	return r
 }
 
 // Update ingests either an EventMsg carrying a routed bus event or a
 // tea.KeyMsg for scroll. Router-relevant event kinds are appended to the
 // accumulated output; other messages (including non-router events) are
 // forwarded to the viewport so scrolling still works.
-func (r *RouterTab) Update(msg tea.Msg) {
+func (r RouterTab) Update(msg tea.Msg) (RouterTab, tea.Cmd) {
 	switch m := msg.(type) {
 	case EventMsg:
-		r.handleEvent(m.Event)
+		r = r.handleEvent(m.Event)
 	case tea.KeyMsg:
 		r.viewport, _ = r.viewport.Update(m)
 	}
+	return r, nil
 }
 
-// handleEvent formats and appends a router-relevant event line.
-func (r *RouterTab) handleEvent(ev bus.Event) {
+// handleEvent formats and appends a router-relevant event line. It returns
+// the modified tab value so Update can thread it back to the caller under
+// value semantics.
+func (r RouterTab) handleEvent(ev bus.Event) RouterTab {
 	switch e := ev.(type) {
 	case *bus.ContextBuilt:
 		// NOTE: Snapshot size is in bytes per the taxonomy; manifestRef can be
@@ -70,11 +78,12 @@ func (r *RouterTab) handleEvent(ev bus.Event) {
 		}
 		appendLine(&r.lines, &r.viewport, e.Timestamp, body)
 	}
+	return r
 }
 
 // View renders the accumulated lines through the viewport so scrolling
 // behaves correctly.
-func (r *RouterTab) View() string {
+func (r RouterTab) View() string {
 	if r.viewport.Height <= 0 {
 		// Defensive: tabs are expected to be sized before being viewed.
 		return ""
@@ -85,7 +94,7 @@ func (r *RouterTab) View() string {
 // Lines returns a defensive copy of the accumulated output lines, in
 // publication order. Used by tests to assert routing without pulling in a
 // real terminal.
-func (r *RouterTab) Lines() []string {
+func (r RouterTab) Lines() []string {
 	out := make([]string, len(r.lines))
 	copy(out, r.lines)
 	return out
