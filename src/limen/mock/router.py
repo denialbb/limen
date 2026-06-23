@@ -1,5 +1,7 @@
 """Router cognitive logic – pure function, testable without subprocess.
 
+Signature: ``router_fn(entry: dict, request: dict) -> dict``
+
 Also serves as entrypoint: ``python -m limen.mock.router <transcript_path>``
 """
 
@@ -10,14 +12,12 @@ import sys
 from limen.mock.runtime import Runtime, load_transcript
 
 
-def router_fn(runtime, entry: dict, request: dict) -> dict:
+def router_fn(entry: dict, request: dict) -> dict:
     """Return the router transcript entry as the result payload.
 
-    *runtime* is ignored (router makes no tool calls).
     *entry* is the Nth transcript entry for the "router" role.
-    *request* is the raw Go request envelope.
+    *request* is the raw Go request envelope (ignored by the mock).
     """
-    # NODE: the transcript entry IS the result payload (decision + rationale).
     return dict(entry)
 
 

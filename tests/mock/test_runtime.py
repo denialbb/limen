@@ -63,7 +63,7 @@ def _line(env: dict) -> str:
 
 
 def _drain(sout: io.StringIO) -> list[dict]:
-    """Return all envelopes written to *sout*, resetting its position.
+    """Return all envelopes written to *sout*.
 
     ``io.StringIO`` shares read/write head, so after writes the position
     is at end and ``readline()`` returns empty.  ``getvalue()`` sidesteps
@@ -101,7 +101,7 @@ class TestNDJSONLoop:
         req = _line(_request_envelope("task-1"))
         rt, sin, sout = _make_runtime(_TRANSCRIPT_ONE_EACH, stdin_content=req)
 
-        rt.run_role("router", lambda _rt, entry, _req: entry)
+        rt.run_role("router", lambda entry, _req: entry)
 
         envs = _drain(sout)
         assert len(envs) == 1
@@ -118,7 +118,7 @@ class TestNDJSONLoop:
         req = _line(_request_envelope("task-2"))
         rt, sin, sout = _make_runtime(_TRANSCRIPT_ONE_EACH, stdin_content=req)
 
-        rt.run_role("validator", lambda _rt, entry, _req: entry)
+        rt.run_role("validator", lambda entry, _req: entry)
 
         envs = _drain(sout)
         assert len(envs) == 1
@@ -130,7 +130,7 @@ class TestNDJSONLoop:
         assert ev["payload"]["passes"] is True
 
     def test_worker_returns_finished_event(self):
-        """Worker run_role returns a worker.finished event with result."""
+        """Worker run_role replays tool calls, then returns finished event."""
         req = (
             _line(_request_envelope("task-3"))
             + _line(
@@ -142,12 +142,13 @@ class TestNDJSONLoop:
         )
         rt, sin, sout = _make_runtime(_TRANSCRIPT_ONE_EACH, stdin_content=req)
 
-        rt.run_role("worker", lambda _rt, entry, _req: _worker_impl(_rt, entry))
+        # Cognitive fn is pure: just returns the result payload.
+        rt.run_role("worker", lambda entry, _req: entry.get("result", {}))
 
         envs = _drain(sout)
         assert len(envs) == 2
 
-        # First envelope: tool_request
+        # First envelope: tool_request (issued by runtime, not cognitive fn)
         tool_env = envs[0]
         assert tool_env["kind"] == "tool_request"
         tr = tool_env["tool_request"]
@@ -163,21 +164,13 @@ class TestNDJSONLoop:
         assert ev["payload"] == {"status": "complete", "summary": "done"}
 
 
-def _worker_impl(rt, entry):
-    """Replay tool calls then return result – same logic as worker_fn."""
-    for tc in entry.get("tool_calls", []):
-        rt.request_tool(tc["name"], tc["args"])
-    return dict(entry.get("result", {}))
-
-
 # ---------------------------------------------------------------------------
-# request_tool round-trip
+# request_tool round-trip (exercised through run_role on worker)
 # ---------------------------------------------------------------------------
 
 class TestRequestTool:
     def test_emits_request_and_returns_result(self):
-        """request_tool emits a tool_request, blocks, returns result on response."""
-        # Pre-feed the request envelope AND the tool_response.
+        """Runtime issues tool_request per entry[‘tool_calls’], blocks, returns result."""
         stdin = (
             _line(_request_envelope("task-4"))
             + _line(
@@ -194,30 +187,22 @@ class TestRequestTool:
         sout = io.StringIO()
         rt = Runtime(_TRANSCRIPT_ONE_EACH, stdin=io.StringIO(stdin), stdout=sout)
 
-        def cog(rt, entry, req):
-            result = rt.request_tool("file.write", {"path": "x.txt", "content": "c"})
-            assert result == {"written": True}
-            return entry.get("result", {})
-
-        rt.run_role("worker", cog)
+        rt.run_role("worker", lambda entry, _req: entry.get("result", {}))
 
         envs = _drain(sout)
         assert len(envs) == 2
 
-        # First write: tool_request
+        # First write: tool_request (from transcript entry)
         assert envs[0]["kind"] == "tool_request"
         assert envs[0]["tool_request"]["tool"] == "file.write"
-        assert envs[0]["tool_request"]["args"] == {
-            "path": "x.txt",
-            "content": "c",
-        }
+        assert envs[0]["tool_request"]["args"] == {"path": "f.txt", "content": "x"}
 
         # Last write: result event
         assert envs[1]["kind"] == "event"
         assert envs[1]["event"]["payload"]["status"] == "complete"
 
     def test_tool_failure_raises(self):
-        """When tool_response.ok is false, request_tool raises RuntimeError."""
+        """When tool_response.ok is false, the runtime raises RuntimeError."""
         stdin = (
             _line(_request_envelope("task-5"))
             + _line(
@@ -233,13 +218,10 @@ class TestRequestTool:
         )
         rt, sin, sout = _make_runtime(_TRANSCRIPT_ONE_EACH, stdin_content=stdin)
 
-        def cog(rt, entry, req):
-            return rt.request_tool("file.write", {})
-
         with pytest.raises(
             RuntimeError, match=r"file.write.*failed.*permission denied"
         ):
-            rt.run_role("worker", cog)
+            rt.run_role("worker", lambda entry, _req: entry.get("result", {}))
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +240,7 @@ class TestTranscriptSequencing:
         # Invocation 1
         req = _line(_request_envelope("task-1"))
         rt, sin, sout = _make_runtime(t, stdin_content=req)
-        rt.run_role("validator", lambda _rt, e, _req: e)
+        rt.run_role("validator", lambda e, _req: e)
         envs1 = _drain(sout)
         assert envs1[0]["event"]["payload"]["feedback"] == "fail1"
 
@@ -266,7 +248,7 @@ class TestTranscriptSequencing:
         rt._stdin = io.StringIO(_line(_request_envelope("task-1")))
         sout2 = io.StringIO()
         rt._stdout = sout2
-        rt.run_role("validator", lambda _rt, e, _req: e)
+        rt.run_role("validator", lambda e, _req: e)
         envs2 = _drain(sout2)
         assert envs2[0]["event"]["payload"]["feedback"] == "pass"
 
@@ -279,14 +261,14 @@ class TestTranscriptSequencing:
         }
         req = _line(_request_envelope("task-1"))
         rt, sin, sout = _make_runtime(t, stdin_content=req)
-        rt.run_role("router", lambda _rt, e, _req: e)
+        rt.run_role("router", lambda e, _req: e)
         envs1 = _drain(sout)
         assert envs1[0]["event"]["payload"]["decision"] == "proceed"
 
         rt._stdin = io.StringIO(_line(_request_envelope("task-1")))
         sout2 = io.StringIO()
         rt._stdout = sout2
-        rt.run_role("validator", lambda _rt, e, _req: e)
+        rt.run_role("validator", lambda e, _req: e)
         envs2 = _drain(sout2)
         assert envs2[0]["event"]["payload"]["feedback"] == "v"
 
@@ -305,7 +287,7 @@ class TestTranscriptExhaustion:
         # Consume the only entry.
         req = _line(_request_envelope("task-1"))
         rt, sin, sout = _make_runtime(t, stdin_content=req)
-        rt.run_role("router", lambda _rt, e, _req: e)
+        rt.run_role("router", lambda e, _req: e)
         envs1 = _drain(sout)
         assert envs1[0]["event"]["type"] == "router.decision"
 
@@ -314,7 +296,7 @@ class TestTranscriptExhaustion:
         sout2 = io.StringIO()
         rt._stdout = sout2
         with pytest.raises(SystemExit) as exc_info:
-            rt.run_role("router", lambda _rt, e, _req: e)
+            rt.run_role("router", lambda e, _req: e)
         assert exc_info.value.code == 0
 
         env_err = _drain(sout2)[0]
@@ -332,7 +314,7 @@ class TestTranscriptExhaustion:
         # First call — succeeds.
         req1 = _line(_request_envelope("task-1"))
         rt, sin, sout = _make_runtime(t, stdin_content=req1)
-        rt.run_role("validator", lambda _rt, e, _req: e)
+        rt.run_role("validator", lambda e, _req: e)
         envs1 = _drain(sout)
         assert envs1[0]["event"]["payload"]["feedback"] == "only"
 
@@ -341,7 +323,7 @@ class TestTranscriptExhaustion:
         sout2 = io.StringIO()
         rt._stdout = sout2
         with pytest.raises(SystemExit):
-            rt.run_role("validator", lambda _rt, e, _req: e)
+            rt.run_role("validator", lambda e, _req: e)
         env_err = _drain(sout2)[0]
         assert env_err["event"]["type"] == "error"
         assert "exhausted" in env_err["event"]["payload"]["error"]
@@ -352,7 +334,7 @@ class TestTranscriptExhaustion:
         req = _line(_request_envelope("task-1"))
         rt, sin, sout = _make_runtime(t, stdin_content=req)
         with pytest.raises(SystemExit):
-            rt.run_role("worker", lambda _rt, e, _req: e)
+            rt.run_role("worker", lambda e, _req: e)
         env_err = _drain(sout)[0]
         assert env_err["event"]["type"] == "error"
         assert "0" in env_err["event"]["payload"]["error"]  # index 0

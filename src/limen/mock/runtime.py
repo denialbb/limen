@@ -1,8 +1,9 @@
 """NDJSON stdin/stdout loop, transcript loader, and tool-request callback.
 
-The Runtime owns the bidirectional NDJSON transport. Cognitive functions
-receive a Runtime handle so the Worker can emit tool-requests inline during
-its run; Router and Validator ignore it (they are one-shot reads).
+The Runtime owns the bidirectional NDJSON transport and the tool-call
+loop.  Cognitive functions are pure ``(entry, request) -> result``
+callables so they can be unit-tested with plain dicts — no Runtime,
+no subprocess needed.
 """
 
 from __future__ import annotations
@@ -106,8 +107,13 @@ class Runtime:
 
         1. Load the Nth transcript entry for *role* (N is per-role monotonic).
         2. Read the incoming request envelope from Go.
-        3. Call *cognitive_fn*(runtime, entry, request).
-        4. Write the result as an ``event`` envelope.
+        3. For ``"worker"``: replay every ``tool_calls[]`` entry via
+           ``request_tool``, blocking on each response, *before* calling
+           the cognitive function.  For ``"router"`` / ``"validator"``:
+           no tool calls (one-shot reads).
+        4. Call *cognitive_fn*(entry, request) — a pure 2-argument function
+           that returns the result payload.
+        5. Write the result as an ``event`` envelope.
 
         Transcript exhaustion writes an error ``event`` and exits the
         process cleanly (exit code 0) so the Go adapter can surface the
@@ -146,8 +152,15 @@ class Runtime:
                 f"Unexpected EOF before request envelope for role {role!r}"
             )
 
+        # --- tool calls (worker only) ---------------------------------------
+        # NODE: the runtime owns the bidirectional tool-call loop so
+        # cognitive functions stay pure (entry, request) -> result.
+        if role == "worker":
+            for tc in entry.get("tool_calls", []):
+                self.request_tool(tc["name"], tc["args"])
+
         # --- cognitive work -------------------------------------------------
-        result = cognitive_fn(self, entry, request_env)
+        result = cognitive_fn(entry, request_env)
 
         # --- write result event ---------------------------------------------
         task_id = _extract_task_id(request_env)

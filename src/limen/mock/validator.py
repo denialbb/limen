@@ -1,5 +1,7 @@
 """Validator cognitive logic – pure function, testable without subprocess.
 
+Signature: ``validator_fn(entry: dict, request: dict) -> dict``
+
 Also serves as entrypoint: ``python -m limen.mock.validator <transcript_path>``
 """
 
@@ -10,12 +12,11 @@ import sys
 from limen.mock.runtime import Runtime, load_transcript
 
 
-def validator_fn(runtime, entry: dict, request: dict) -> dict:
+def validator_fn(entry: dict, request: dict) -> dict:
     """Return the validator transcript entry as the result payload.
 
-    *runtime* is ignored (validator makes no tool calls).
     *entry* is the Nth transcript entry for the "validator" role.
-    *request* is the raw Go request envelope.
+    *request* is the raw Go request envelope (ignored by the mock).
     """
     return dict(entry)
 
