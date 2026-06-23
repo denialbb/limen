@@ -916,3 +916,53 @@ func TestRunTask_EmitsTaskFinalizedOnConflictExhaustion(t *testing.T) {
 		t.Errorf("expected TaskID %s, got %s", task.ID, f.TaskID)
 	}
 }
+
+// TestRunTask_RecordsToolCalls verifies that the orchestrator records
+// tool calls with the full (call, args, response) shape through the happy
+// path, guarding against the lossy label-only recording fixed by BUG #1.
+func TestRunTask_RecordsToolCalls(t *testing.T) {
+	store := &recordingMockStore{mockStore: mockStore{tasks: make(map[string]*state.Task)}}
+	task, _ := store.CreateTask("task-tc-1", 3)
+
+	router := &mockRouter{decision: orchestrator.DecisionProceed}
+	worker := &mockWorker{}
+	validator := &mockValidator{passes: true}
+	gitClient := &mockGit{valid: true}
+
+	orch := orchestrator.NewOrchestrator(store, bus.NewChannelBus(), router, &mockRetriever{}, worker, validator, gitClient, worktreeRoot())
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	if err := orch.RunTask(ctx, task.ID); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	// The happy path exercises router.Evaluate, worker.ProduceSolution, and
+	// validator.Evaluate. Verify all three were recorded with the correct
+	// shape (even though args/response are empty for now — the shape is what
+	// matters; real args/response will come with the spike).
+	if len(store.calls) != 3 {
+		t.Fatalf("expected 3 tool calls on happy path, got: %d", len(store.calls))
+	}
+
+	expected := []toolCallRecord{
+		{taskID: task.ID, call: "router.Evaluate", args: "", response: ""},
+		{taskID: task.ID, call: "worker.ProduceSolution", args: "", response: ""},
+		{taskID: task.ID, call: "validator.Evaluate", args: "", response: ""},
+	}
+
+	for i, want := range expected {
+		if store.calls[i].call != want.call {
+			t.Errorf("call %d: expected %q, got %q", i, want.call, store.calls[i].call)
+		}
+		if store.calls[i].taskID != want.taskID {
+			t.Errorf("call %d: expected taskID %q, got %q", i, want.taskID, store.calls[i].taskID)
+		}
+		if store.calls[i].args != want.args {
+			t.Errorf("call %d: expected args %q, got %q", i, want.args, store.calls[i].args)
+		}
+		if store.calls[i].response != want.response {
+			t.Errorf("call %d: expected response %q, got %q", i, want.response, store.calls[i].response)
+		}
+	}
+}
