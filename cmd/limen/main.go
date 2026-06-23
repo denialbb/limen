@@ -18,6 +18,7 @@ import (
 	"github.com/denialbb/limen/internal/bus"
 	"github.com/denialbb/limen/internal/git"
 	"github.com/denialbb/limen/internal/orchestrator"
+	"github.com/denialbb/limen/internal/remote"
 	"github.com/denialbb/limen/internal/state"
 	"github.com/denialbb/limen/internal/tui"
 )
@@ -243,6 +244,8 @@ func runTUICmd() {
 	taskID := tuiFlags.String("task-id", "", "The ID of the task to run")
 	dbPath := tuiFlags.String("db-path", "limen.db", "Path to the SQLite database")
 	repoPath := tuiFlags.String("repo-path", ".", "Path to the target git repository")
+	mockFlag := tuiFlags.Bool("mock", true, "Use Python mock backend for cognitive components")
+	mockTranscript := tuiFlags.String("mock-transcript", "src/limen/mock/transcripts/spike.json", "Path to the mock transcript JSON file")
 
 	if err := tuiFlags.Parse(os.Args[2:]); err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
@@ -258,11 +261,11 @@ func runTUICmd() {
 	if !isTTY(os.Stdout.Fd()) {
 		// NOTE: Non-interactive stdout. Fall back to the one-shot log style so
 		// pipes and CI get the same outcome reporting without ANSI pollution.
-		runTaskOneShot(*taskID, *dbPath, *repoPath)
+		runTaskOneShot(*taskID, *dbPath, *repoPath, *mockFlag, *mockTranscript)
 		return
 	}
 
-	runTaskInteractive(*taskID, *dbPath, *repoPath)
+	runTaskInteractive(*taskID, *dbPath, *repoPath, *mockFlag, *mockTranscript)
 }
 
 // isTTY reports whether the given file descriptor is an interactive terminal.
@@ -276,7 +279,7 @@ func isTTY(fd uintptr) bool {
 // Bubble Tea program in the foreground. After the program exits, a single
 // final-state line is printed so scripts that parse the trailing output still
 // get the outcome.
-func runTaskInteractive(taskID, dbPath, repoPath string) {
+func runTaskInteractive(taskID, dbPath, repoPath string, mock bool, mockTranscript string) {
 	store, err := state.NewSQLiteStore(dbPath)
 	if err != nil {
 		log.Fatalf("Failed to initialize SQLite store: %v", err)
@@ -293,14 +296,40 @@ func runTaskInteractive(taskID, dbPath, repoPath string) {
 	eventBus := bus.NewChannelBus()
 	defer eventBus.Close()
 
+	var (
+		router    orchestrator.Router
+		retriever orchestrator.Retriever
+		worker    orchestrator.Worker
+		validator orchestrator.Validator
+		gitClient orchestrator.GitClient
+	)
+
+	gitClient = &cliGit{manager: manager, repoPath: repoPath}
+
+	if mock {
+		// NOTE: Wire Python mock backend adapters. Each adapter launches a
+		// single-shot `python -m limen.mock.<role>` subprocess per call and
+		// passes the transcript path as argv[1] so the mock runtime replays
+		// canned entries from the transcript file.
+		router = remote.NewRouter([]string{"python", "-m", "limen.mock.router", mockTranscript})
+		retriever = &cliRetriever{}
+		worker = remote.NewWorker([]string{"python", "-m", "limen.mock.worker", mockTranscript})
+		validator = remote.NewValidator([]string{"python", "-m", "limen.mock.validator", mockTranscript}, gitClient)
+	} else {
+		router = &cliRouter{}
+		retriever = &cliRetriever{}
+		worker = &cliWorker{}
+		validator = &cliValidator{}
+	}
+
 	orch := orchestrator.NewOrchestrator(
 		store,
 		eventBus,
-		&cliRouter{},
-		&cliRetriever{},
-		&cliWorker{},
-		&cliValidator{},
-		&cliGit{manager: manager, repoPath: repoPath},
+		router,
+		retriever,
+		worker,
+		validator,
+		gitClient,
 		worktreeRoot,
 	)
 
@@ -353,7 +382,7 @@ func runTaskInteractive(taskID, dbPath, repoPath string) {
 // creation, RunTask execution, and final state logging. Both the explicit
 // `run-task` subcommand and the non-TTY fallback from `runTUICmd` delegate here
 // to avoid duplicating the setup and teardown logic.
-func runTaskWithConfig(taskID, dbPath, repoPath string) {
+func runTaskWithConfig(taskID, dbPath, repoPath string, mock bool, mockTranscript string) {
 	store, err := state.NewSQLiteStore(dbPath)
 	if err != nil {
 		log.Fatalf("Failed to initialize SQLite store: %v", err)
@@ -376,14 +405,36 @@ func runTaskWithConfig(taskID, dbPath, repoPath string) {
 	eventBus := bus.NewChannelBus()
 	defer eventBus.Close()
 
+	var (
+		router    orchestrator.Router
+		retriever orchestrator.Retriever
+		worker    orchestrator.Worker
+		validator orchestrator.Validator
+		gitClient orchestrator.GitClient
+	)
+
+	gitClient = &cliGit{manager: manager, repoPath: repoPath}
+
+	if mock {
+		router = remote.NewRouter([]string{"python", "-m", "limen.mock.router", mockTranscript})
+		retriever = &cliRetriever{}
+		worker = remote.NewWorker([]string{"python", "-m", "limen.mock.worker", mockTranscript})
+		validator = remote.NewValidator([]string{"python", "-m", "limen.mock.validator", mockTranscript}, gitClient)
+	} else {
+		router = &cliRouter{}
+		retriever = &cliRetriever{}
+		worker = &cliWorker{}
+		validator = &cliValidator{}
+	}
+
 	orch := orchestrator.NewOrchestrator(
 		store,
 		eventBus,
-		&cliRouter{},
-		&cliRetriever{},
-		&cliWorker{},
-		&cliValidator{},
-		&cliGit{manager: manager, repoPath: repoPath},
+		router,
+		retriever,
+		worker,
+		validator,
+		gitClient,
 		worktreeRoot,
 	)
 
@@ -408,8 +459,8 @@ func runTaskWithConfig(taskID, dbPath, repoPath string) {
 
 // runTaskOneShot is the non-TTY fallback. It reuses the run-task log-style
 // output and shares the same setup path as the explicit `run-task` subcommand.
-func runTaskOneShot(taskID, dbPath, repoPath string) {
-	runTaskWithConfig(taskID, dbPath, repoPath)
+func runTaskOneShot(taskID, dbPath, repoPath string, mock bool, mockTranscript string) {
+	runTaskWithConfig(taskID, dbPath, repoPath, mock, mockTranscript)
 }
 
 func runTaskCmd() {
@@ -417,6 +468,8 @@ func runTaskCmd() {
 	taskID := runTaskFlags.String("task-id", "", "The ID of the task to run")
 	dbPath := runTaskFlags.String("db-path", "limen.db", "Path to the SQLite database")
 	repoPath := runTaskFlags.String("repo-path", ".", "Path to the target git repository")
+	mockFlag := runTaskFlags.Bool("mock", true, "Use Python mock backend for cognitive components")
+	mockTranscript := runTaskFlags.String("mock-transcript", "src/limen/mock/transcripts/spike.json", "Path to the mock transcript JSON file")
 
 	if err := runTaskFlags.Parse(os.Args[2:]); err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
@@ -429,5 +482,5 @@ func runTaskCmd() {
 		os.Exit(1)
 	}
 
-	runTaskWithConfig(*taskID, *dbPath, *repoPath)
+	runTaskWithConfig(*taskID, *dbPath, *repoPath, *mockFlag, *mockTranscript)
 }
