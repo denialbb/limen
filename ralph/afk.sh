@@ -2,18 +2,29 @@
 set -eo pipefail
 
 SESSION_FILE=".ralph_session"
+SESSION_ID=""
 
-if [[ -f "$SESSION_FILE" ]]; then
-    SESSION_ID=$(cat "$SESSION_FILE")
-else
-    SESSION_ID=$(opencode sessions create 2>/dev/null || opencode chat --new-session 2>/dev/null)
-    echo "$SESSION_ID" >"$SESSION_FILE"
-fi
-
-echo "Using session: $SESSION_ID"
+[[ -f "$SESSION_FILE" ]] && SESSION_ID=$(cat "$SESSION_FILE")
+# An empty/stale file means no usable session yet; let the first run create one.
+[[ -z "$SESSION_ID" ]] && rm -f "$SESSION_FILE"
 
 iterations=${1:-20}
 mkdir -p issues/done
+
+# capture_session_id: extract the session ID after the first run.
+# `opencode run` does not emit the session ID in its JSON event stream, so we
+# fall back to `opencode session list`, whose newest entry is the one we just
+# created. Session IDs are prefixed with "ses_".
+capture_session_id() {
+    local sid=""
+    sid=$(opencode session list 2>/dev/null | awk '/^ses_/ {print $1; exit}')
+    if [[ -n "$sid" ]]; then
+        echo "$sid" > "$SESSION_FILE"
+        echo "Captured session: $sid"
+    else
+        echo "WARNING: could not capture session ID; subsequent iterations will spawn fresh sessions." >&2
+    fi
+}
 
 stream_text='
 select(.type == "text")
@@ -172,15 +183,45 @@ $prompt_body
 EOF
     )
 
+    session_args=()
+    if [[ -n "$SESSION_ID" ]]; then
+        session_args=(--session "$SESSION_ID")
+    fi
+
+    set +e
     opencode run \
-        --session "$SESSION_ID" \
+        "${session_args[@]}" \
         --agent python-go-coder \
         --dangerously-skip-permissions \
         --format json \
-        "$prompt" |
+        "$prompt" 2>"$tmpfile.err" |
         grep --line-buffered '^{' |
         tee "$tmpfile" |
         jq --unbuffered -rj "$stream_text"
+    oc_exit=${PIPESTATUS[0]}
+    set -e
+
+    if [ "$oc_exit" -ne 0 ]; then
+        echo "opencode run exited $oc_exit. stderr:"
+        cat "$tmpfile.err" >&2
+        rm -f "$tmpfile.err"
+        write_state "opencode_failed" "$task_file"
+        echo "Skipping verify; leaving $task_file open for next iteration."
+        continue
+    fi
+    rm -f "$tmpfile.err"
+
+    # On first iteration we created the session implicitly; capture its ID now.
+    if [[ -z "$SESSION_ID" ]]; then
+        capture_session_id "$tmpfile"
+        SESSION_ID=$(cat "$SESSION_FILE" 2>/dev/null)
+        if [[ -n "$SESSION_ID" ]]; then
+            echo ""
+            echo ">>> Ralph session: $SESSION_ID"
+            echo ">>> Attach with: opencode --session $SESSION_ID"
+            echo ""
+        fi
+    fi
 
     result=$(jq -r "$final_result" "$tmpfile" 2>/dev/null || echo "")
 
