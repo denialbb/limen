@@ -1,0 +1,10 @@
+{
+  "id": "task-123",
+  "type": "code | test | refactor | research",
+  "repo_state": "commit hash",
+  "instructions": "...",
+  "acceptance": "verify.sh or test command",
+  "context_files": ["..."],
+  "status": "queued | running | done | failed",
+  "output": "filled by worker"
+}

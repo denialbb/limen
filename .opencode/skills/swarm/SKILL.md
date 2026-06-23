@@ -17,7 +17,8 @@ resolved.
 
 ## Roles
 
-- **Orchestrator (you)**: subdivides the work, dispatches agents, receives
+- **Orchestrator (you)**: subdivides the work (pair this with the /prd-to-issues
+  skill to create tracer bullets vertical slices), dispatches agents, receives
   commit hashes, forwards to the reviewer, saves reviews, validates them
   against your own judgment, and decides whether to re-task or proceed.
 - **Coding subagent (`python-go-coder`)**: implements a single,
@@ -31,16 +32,11 @@ resolved.
 
 ### 1. Subdivide
 
-Break the work into the smallest possible independent tasks. Prefer tasks
-that touch disjoint file sets so agents can run concurrently without git
-conflicts. If tasks have dependencies, group them into waves: tasks within
-a wave run in parallel; a wave only starts after the previous wave's
-reviews pass.
+Break the work into the smallest possible vertical slices use the /prd-to-issues skill if possible. Prefer tasks that touch disjoint file sets so agents can run concurrently without git conflicts. If tasks have dependencies, group them into waves: tasks within a wave run in parallel; a wave only starts after the previous wave's reviews pass.
 
 ### 2. Dispatch
 
-Launch one `python-go-coder` Task per task in the current wave. Each
-agent prompt MUST include:
+Launch one `python-go-coder` Task per task in the current wave. Each agent prompt MUST include:
 
 - The specific files to create or modify.
 - The design document path(s) that govern the work.
@@ -49,7 +45,7 @@ agent prompt MUST include:
 - The requirement to commit with a clear, bullet-pointed message.
 - The instruction to report back the commit hash and a summary of changes.
 
-Use `git checkout -b <branch>` per agent if tasks might touch overlapping
+Use `git checkout -b <branch>` or worktrees per agent if tasks might touch overlapping
 files; otherwise all agents may commit on the current branch.
 
 ### 3. Review
