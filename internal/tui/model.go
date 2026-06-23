@@ -210,6 +210,7 @@ func (m Model) handleResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	m.validator.SetSize(msg.Width, contentHeight)
 	m.timeline.SetSize(msg.Width, contentHeight)
 	m.header.SetWidth(msg.Width)
+	m.tabStrip.SetSize(msg.Width)
 	return m, nil
 }
 
@@ -298,7 +299,7 @@ func (m Model) View() string {
 		m.header.View(),
 		sepLine,
 		m.activeTabView(),
-		m.tabStrip.View(m.width),
+		m.tabStrip.View(),
 	}
 
 	if theme.SeparatorPadV > 0 {

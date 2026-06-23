@@ -9,6 +9,7 @@ import (
 type TabStrip struct {
 	tabs      []string
 	activeIdx int
+	width     int
 }
 
 func NewTabStrip() *TabStrip {
@@ -27,7 +28,11 @@ func (t *TabStrip) SetActive(idx int) {
 
 func (t *TabStrip) Active() int { return t.activeIdx }
 
-func (t *TabStrip) View(width int) string {
+func (t *TabStrip) SetSize(width int) {
+	t.width = width
+}
+
+func (t *TabStrip) View() string {
 	active, inactive := theme.TabStyles()
 
 	rendered := make([]string, len(t.tabs))
@@ -44,13 +49,13 @@ func (t *TabStrip) View(width int) string {
 	boundary := theme.TabBoundaryPad
 	gapCount := len(rendered) - 1
 
-	if width <= 0 || gapCount <= 0 {
+	if t.width <= 0 || gapCount <= 0 {
 		return strings.Repeat(" ", boundary) +
 			strings.Join(rendered, " ") +
 			strings.Repeat(" ", boundary)
 	}
 
-	available := width - totalWidth - 2*boundary
+	available := t.width - totalWidth - 2*boundary
 	if available <= 0 {
 		return strings.Join(rendered, " ")
 	}
