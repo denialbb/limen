@@ -296,7 +296,12 @@ func TestEndToEndWithRealBinary(t *testing.T) {
 		"--mock",
 		"--mock-transcript", transcriptPath,
 	)
+	// NODE: The limen binary spawns Python subprocesses that import the
+	// `limen` package from src/.  The subprocesses inherit the parent's
+	// environment, so we inject PYTHONPATH to point at the repo's `src`
+	// directory.  Without this, Python raises ModuleNotFoundError.
 	cmd.Dir = repoDir
+	cmd.Env = append(os.Environ(), "PYTHONPATH="+filepath.Join(root, "src"))
 
 	output, err := cmd.CombinedOutput()
 	// NODE: We capture the output even on error so assertions below can
