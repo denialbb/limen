@@ -116,6 +116,32 @@ func (m *mockStore) RecordContextSnapshot(id, snapshot string) error {
 	return nil
 }
 
+func (m *mockStore) TransitionAndRecordFinalOutput(id string, newState state.TaskState, finalOutput string) error {
+	t, ok := m.tasks[id]
+	if !ok {
+		return state.ErrTaskNotFound
+	}
+	if !state.IsValidTransition(t.CurrentState, newState) {
+		return state.ErrInvalidTransition
+	}
+	t.CurrentState = newState
+	t.FinalOutput = finalOutput
+	return nil
+}
+
+func (m *mockStore) TransitionAndRecordContextSnapshot(id string, newState state.TaskState, snapshot string) error {
+	t, ok := m.tasks[id]
+	if !ok {
+		return state.ErrTaskNotFound
+	}
+	if !state.IsValidTransition(t.CurrentState, newState) {
+		return state.ErrInvalidTransition
+	}
+	t.CurrentState = newState
+	t.ContextSnapshot = snapshot
+	return nil
+}
+
 // Simple mocks for other interfaces
 type mockRouter struct {
 	decision orchestrator.RouterDecision

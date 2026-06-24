@@ -209,18 +209,33 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 		default:
 		}
 
-		if err := o.transitionAndEmit(task.ID, state.StateContextBuilding, em); err != nil {
-			return err
-		}
-
+		// NODE: Retrieve context first while still in the previous state,
+		// then atomically transition to CONTEXT_BUILDING and record the
+		// snapshot. This eliminates the crash window between the state
+		// transition and the snapshot write (BUG #3).
 		contextSnapshot, err := o.retriever.Retrieve(ctx, task, em)
 		if err != nil {
 			return err
 		}
 
-		if err := o.store.RecordContextSnapshot(task.ID, contextSnapshot); err != nil {
+		// Read authoritative from-state; the task variable may be stale
+		// after the routing evaluation on an expand iteration.
+		current, err := o.store.GetTask(task.ID)
+		if err != nil {
 			return err
 		}
+		fromState := current.CurrentState
+
+		if err := o.store.TransitionAndRecordContextSnapshot(task.ID, state.StateContextBuilding, contextSnapshot); err != nil {
+			return err
+		}
+
+		em.Publish(&bus.TaskStateChanged{
+			From:      fromState,
+			To:        state.StateContextBuilding,
+			TaskID:    task.ID,
+			Timestamp: time.Now(),
+		})
 
 		// Refresh the task so the router sees the recorded context snapshot.
 		task, err = o.store.GetTask(task.ID)
@@ -378,10 +393,11 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 				continue
 			}
 
-			if err := o.transitionAndEmit(task.ID, state.StateApproved, em); err != nil {
-				return err
-			}
-
+			// NODE: Perform git operations first while still in
+			// AWAITING_VALIDATION, then atomically transition to APPROVED and
+			// record the final output in a single transaction.  This eliminates
+			// the crash window between the state transition and the canonical
+			// output write (BUG #3).
 			finalOutput, err := o.git.GetWorktreeDiff(ctx, wt)
 			if err != nil {
 				return err
@@ -390,9 +406,25 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 			if err := o.git.CommitWorktree(ctx, task.ID, wt); err != nil {
 				return err
 			}
-			if err := o.store.RecordFinalOutput(task.ID, finalOutput); err != nil {
+
+			// Read authoritative from-state from the store.
+			current, err := o.store.GetTask(task.ID)
+			if err != nil {
 				return err
 			}
+			fromState := current.CurrentState
+
+			if err := o.store.TransitionAndRecordFinalOutput(task.ID, state.StateApproved, finalOutput); err != nil {
+				return err
+			}
+
+			em.Publish(&bus.TaskStateChanged{
+				From:      fromState,
+				To:        state.StateApproved,
+				TaskID:    task.ID,
+				Timestamp: time.Now(),
+			})
+
 			// NOTE: Final transition to COMMITTED plus the finalize event are
 			// emitted together via finalizeAndEmit; the finalOutput is the diff
 			// reference surfaced to the TUI footer on completion.

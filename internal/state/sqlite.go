@@ -418,6 +418,90 @@ func (s *SQLiteStore) RecordContextSnapshot(id string, snapshot string) error {
 	return nil
 }
 
+// TransitionAndRecordFinalOutput transitions the task to newState and records
+// the final output in a single atomic transaction, eliminating the crash window
+// between the two operations (BUG #3).
+func (s *SQLiteStore) TransitionAndRecordFinalOutput(id string, newState TaskState, finalOutput string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var current TaskState
+	if err := tx.QueryRow("SELECT current_state FROM tasks WHERE id = ?", id).Scan(&current); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrTaskNotFound
+		}
+		return fmt.Errorf("select current state: %w", err)
+	}
+
+	if !IsValidTransition(current, newState) {
+		return ErrInvalidTransition
+	}
+
+	if _, err := tx.Exec(
+		"UPDATE tasks SET current_state = ?, final_output = ? WHERE id = ?",
+		newState, finalOutput, id,
+	); err != nil {
+		return fmt.Errorf("update task state and final output: %w", err)
+	}
+
+	if _, err := tx.Exec(
+		"INSERT INTO state_transitions (task_id, from_state, to_state, occurred_at) VALUES (?, ?, ?, ?)",
+		id, current, newState, time.Now().Unix(),
+	); err != nil {
+		return fmt.Errorf("insert state transition: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transition and final output: %w", err)
+	}
+	return nil
+}
+
+// TransitionAndRecordContextSnapshot transitions the task to newState and records
+// the context snapshot in a single atomic transaction, eliminating the crash window
+// between the two operations (BUG #3).
+func (s *SQLiteStore) TransitionAndRecordContextSnapshot(id string, newState TaskState, snapshot string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var current TaskState
+	if err := tx.QueryRow("SELECT current_state FROM tasks WHERE id = ?", id).Scan(&current); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrTaskNotFound
+		}
+		return fmt.Errorf("select current state: %w", err)
+	}
+
+	if !IsValidTransition(current, newState) {
+		return ErrInvalidTransition
+	}
+
+	if _, err := tx.Exec(
+		"UPDATE tasks SET current_state = ?, context_snapshot = ? WHERE id = ?",
+		newState, snapshot, id,
+	); err != nil {
+		return fmt.Errorf("update task state and context snapshot: %w", err)
+	}
+
+	if _, err := tx.Exec(
+		"INSERT INTO state_transitions (task_id, from_state, to_state, occurred_at) VALUES (?, ?, ?, ?)",
+		id, current, newState, time.Now().Unix(),
+	); err != nil {
+		return fmt.Errorf("insert state transition: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transition and context snapshot: %w", err)
+	}
+	return nil
+}
+
 // StateTransition records a single task state change for replay/audit.
 type StateTransition struct {
 	ID         int64

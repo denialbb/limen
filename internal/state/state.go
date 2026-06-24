@@ -80,6 +80,15 @@ type Store interface {
 
 	// RecordContextSnapshot persists the context snapshot for the task.
 	RecordContextSnapshot(id string, snapshot string) error
+
+	// TransitionAndRecordFinalOutput transitions the task to newState and records
+	// the final output in a single atomic transaction. This ensures there is no
+	// window where the task is in newState without a recorded final output.
+	TransitionAndRecordFinalOutput(id string, newState TaskState, finalOutput string) error
+
+	// TransitionAndRecordContextSnapshot transitions the task to newState and records
+	// the context snapshot in a single atomic transaction.
+	TransitionAndRecordContextSnapshot(id string, newState TaskState, snapshot string) error
 }
 
 // IsValidTransition encodes the Limen Task State Machine.

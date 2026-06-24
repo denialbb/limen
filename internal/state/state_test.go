@@ -431,6 +431,128 @@ func TestRecordContextSnapshotTaskNotFound(t *testing.T) {
 	}
 }
 
+// TestTransitionAndRecordFinalOutput_Atomic asserts that the combined
+// method transitions the state and records the final output atomically.
+// After a successful call both effects are visible; after a failure (invalid
+// transition) neither effect persists — eliminating the APPROVED-without-
+// final-output window (BUG #3).
+func TestTransitionAndRecordFinalOutput_Atomic(t *testing.T) {
+	store := newTestStore(t)
+	_, _ = store.CreateTask("task-tx", 3)
+
+	// Walk the task to AWAITING_VALIDATION so APPROVED is a valid transition.
+	mustTransition(t, store, "task-tx", state.StateContextBuilding)
+	mustTransition(t, store, "task-tx", state.StateRoutingEvaluation)
+	mustTransition(t, store, "task-tx", state.StateWorkerRunning)
+	mustTransition(t, store, "task-tx", state.StateAwaitingValidation)
+
+	// --- happy path: both state and output are set atomically ---
+	if err := store.TransitionAndRecordFinalOutput("task-tx", state.StateApproved, "my-final-output"); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	task, err := store.GetTask("task-tx")
+	if err != nil {
+		t.Fatalf("expected no error getting task, got: %v", err)
+	}
+	if task.CurrentState != state.StateApproved {
+		t.Errorf("expected state APPROVED, got %s", task.CurrentState)
+	}
+	if task.FinalOutput != "my-final-output" {
+		t.Errorf("expected FinalOutput 'my-final-output', got %q", task.FinalOutput)
+	}
+
+	// Verify the transition was also recorded in the history.
+	transitions, err := store.GetStateTransitions("task-tx")
+	if err != nil {
+		t.Fatalf("expected no error getting transitions, got: %v", err)
+	}
+	last := transitions[len(transitions)-1]
+	if last.ToState != state.StateApproved {
+		t.Errorf("expected last transition to APPROVED, got %s", last.ToState)
+	}
+
+	// --- failure path: invalid transition is rolled back ---
+	// Task is now APPROVED; COMMITTED → APPROVED is invalid, so this must fail.
+	if err := store.TransitionAndRecordFinalOutput("task-tx", state.StateContextBuilding, "should-not-appear"); err == nil {
+		t.Fatal("expected error for invalid transition, got nil")
+	}
+
+	// State and output must be unchanged after the rollback.
+	task, err = store.GetTask("task-tx")
+	if err != nil {
+		t.Fatalf("expected no error getting task, got: %v", err)
+	}
+	if task.CurrentState != state.StateApproved {
+		t.Errorf("expected state to remain APPROVED after rollback, got %s", task.CurrentState)
+	}
+	if task.FinalOutput != "my-final-output" {
+		t.Errorf("expected FinalOutput to remain 'my-final-output' after rollback, got %q", task.FinalOutput)
+	}
+}
+
+// TestTransitionAndRecordFinalOutput_TaskNotFound verifies that a missing task
+// rolls back cleanly and returns ErrTaskNotFound.
+func TestTransitionAndRecordFinalOutput_TaskNotFound(t *testing.T) {
+	store := newTestStore(t)
+	err := store.TransitionAndRecordFinalOutput("nonexistent", state.StateApproved, "data")
+	if !errors.Is(err, state.ErrTaskNotFound) {
+		t.Errorf("expected ErrTaskNotFound, got: %v", err)
+	}
+}
+
+// TestTransitionAndRecordContextSnapshot_Atomic asserts that the combined
+// method transitions the state and records the context snapshot atomically,
+// eliminating the CONTEXT_BUILDING-without-snapshot window (BUG #3).
+func TestTransitionAndRecordContextSnapshot_Atomic(t *testing.T) {
+	store := newTestStore(t)
+	_, _ = store.CreateTask("task-tx", 3)
+	// Task starts in CREATED; CONTEXT_BUILDING is a valid transition.
+
+	// --- happy path: both state and snapshot are set atomically ---
+	if err := store.TransitionAndRecordContextSnapshot("task-tx", state.StateContextBuilding, "my-snapshot"); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	task, err := store.GetTask("task-tx")
+	if err != nil {
+		t.Fatalf("expected no error getting task, got: %v", err)
+	}
+	if task.CurrentState != state.StateContextBuilding {
+		t.Errorf("expected state CONTEXT_BUILDING, got %s", task.CurrentState)
+	}
+	if task.ContextSnapshot != "my-snapshot" {
+		t.Errorf("expected ContextSnapshot 'my-snapshot', got %q", task.ContextSnapshot)
+	}
+
+	// --- failure path: invalid transition is rolled back ---
+	// CONTEXT_BUILDING → WORKER_RUNNING is valid, but CONTEXT_BUILDING → CREATED is not.
+	if err := store.TransitionAndRecordContextSnapshot("task-tx", state.StateCreated, "should-not-appear"); err == nil {
+		t.Fatal("expected error for invalid transition, got nil")
+	}
+
+	task, err = store.GetTask("task-tx")
+	if err != nil {
+		t.Fatalf("expected no error getting task, got: %v", err)
+	}
+	if task.CurrentState != state.StateContextBuilding {
+		t.Errorf("expected state to remain CONTEXT_BUILDING after rollback, got %s", task.CurrentState)
+	}
+	if task.ContextSnapshot != "my-snapshot" {
+		t.Errorf("expected ContextSnapshot to remain 'my-snapshot' after rollback, got %q", task.ContextSnapshot)
+	}
+}
+
+// TestTransitionAndRecordContextSnapshot_TaskNotFound verifies that a missing
+// task rolls back cleanly and returns ErrTaskNotFound.
+func TestTransitionAndRecordContextSnapshot_TaskNotFound(t *testing.T) {
+	store := newTestStore(t)
+	err := store.TransitionAndRecordContextSnapshot("nonexistent", state.StateContextBuilding, "data")
+	if !errors.Is(err, state.ErrTaskNotFound) {
+		t.Errorf("expected ErrTaskNotFound, got: %v", err)
+	}
+}
+
 // TestRecordFinalOutput_Transactional asserts that RecordFinalOutput writes are
 // atomic: after a successful call the final_output is visible to subsequent
 // reads, and a task-not-found error rolls back cleanly without side effects.
