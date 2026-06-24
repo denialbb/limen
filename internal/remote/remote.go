@@ -24,6 +24,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/denialbb/limen/internal/git"
@@ -113,7 +114,10 @@ func (sp *subprocess) watchShutdown(watcherCtx, parentCtx context.Context) {
 	case <-parentCtx.Done():
 	}
 
-	// Close stdin so the subprocess sees EOF and can clean up.
+	// NODE: Send SIGTERM first so the subprocess can clean up (flush
+	// buffers, close files, etc.).  Close stdin so a subprocess reading
+	// from stdin sees EOF as an additional shutdown signal.
+	_ = sp.cmd.Process.Signal(syscall.SIGTERM)
 	_ = sp.closer.Close()
 
 	// Give the process a chance to exit gracefully.
@@ -212,7 +216,7 @@ func (r *ndjsonRouter) Evaluate(ctx context.Context, task *state.Task, em orches
 // invoke launches the subprocess, sends the request envelope, reads
 // exactly one result event, and returns the decoded payload.
 func (r *ndjsonRouter) invoke(ctx context.Context, req requestEnvelope) (map[string]any, error) {
-	cmd := exec.CommandContext(ctx, r.cmdArgs[0], r.cmdArgs[1:]...)
+	cmd := exec.Command(r.cmdArgs[0], r.cmdArgs[1:]...)
 	sp, err := newSubprocess(ctx, cmd, r.opts.shutdownTimeout)
 	if err != nil {
 		return nil, err
@@ -255,7 +259,7 @@ func (w *ndjsonWorker) ProduceSolution(ctx context.Context, task *state.Task, wt
 		Attempt:  task.RetryCount + 1,
 	}
 
-	cmd := exec.CommandContext(ctx, w.cmdArgs[0], w.cmdArgs[1:]...)
+	cmd := exec.Command(w.cmdArgs[0], w.cmdArgs[1:]...)
 	sp, err := newSubprocess(ctx, cmd, w.opts.shutdownTimeout)
 	if err != nil {
 		return err
@@ -393,7 +397,7 @@ func (v *ndjsonValidator) Evaluate(ctx context.Context, task *state.Task, wt *gi
 		Attempt:      task.RetryCount + 1,
 	}
 
-	cmd := exec.CommandContext(ctx, v.cmdArgs[0], v.cmdArgs[1:]...)
+	cmd := exec.Command(v.cmdArgs[0], v.cmdArgs[1:]...)
 	sp, err := newSubprocess(ctx, cmd, v.opts.shutdownTimeout)
 	if err != nil {
 		return false, "", err

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -496,11 +497,14 @@ func TestTranscriptExhaustion_ErrorSurfacing(t *testing.T) {
 // --- tests: graceful shutdown ----------------------------------------------
 
 func TestGracefulShutdown_ContextCancellation(t *testing.T) {
-	// Verify that ctx.Done() on a long-running process triggers process
-	// termination.  We run sleep and kill it by cancelling the context.
+	// Verify that ctx.Done() triggers SIGTERM, then SIGKILL after the
+	// grace period, matching the watchShutdown pattern in newSubprocess.
+	// We use exec.Command (not CommandContext) so Go stdlib does not
+	// preempt us with its own SIGKILL.
 	ctx, cancel := context.WithCancel(context.Background())
 
-	cmd := exec.CommandContext(ctx, "sleep", "60")
+	cmd := exec.Command("sleep", "60")
+	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -508,6 +512,22 @@ func TestGracefulShutdown_ContextCancellation(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- cmd.Wait()
+	}()
+
+	// Watcher goroutine mirrors watchShutdown: on ctx cancellation send
+	// SIGTERM, then SIGKILL after the grace period.
+	go func() {
+		<-ctx.Done()
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+
+		select {
+		case <-done:
+			// Process exited on SIGTERM; nothing more to do.
+			return
+		case <-time.After(100 * time.Millisecond):
+			// Grace period expired; force-kill.
+			_ = cmd.Process.Kill()
+		}
 	}()
 
 	cancel()
@@ -525,6 +545,97 @@ func TestGracefulShutdown_ContextCancellation(t *testing.T) {
 	if ctx.Err() == nil {
 		t.Error("expected context to be cancelled")
 	}
+}
+
+// TestGracefulShutdown_SIGTERMCaught verifies that a subprocess which
+// handles SIGTERM cleanly exits before the grace period expires.
+func TestGracefulShutdown_SIGTERMCaught(t *testing.T) {
+	// Build a helper binary that catches SIGTERM and exits cleanly.
+	helperPath := buildSIGTERMHelper(t, t.TempDir())
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	cmd := exec.Command(helperPath)
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+
+	// Watcher mirrors watchShutdown.
+	go func() {
+		<-ctx.Done()
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+
+		select {
+		case <-done:
+			return
+		case <-time.After(2 * time.Second):
+			_ = cmd.Process.Kill()
+		}
+	}()
+
+	// Let the process start.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("expected clean exit on SIGTERM, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		cmd.Process.Kill()
+		t.Fatal("process did not exit after SIGTERM")
+	}
+}
+
+// buildSIGTERMHelper compiles a tiny Go program that catches SIGTERM and
+// exits with code 0, or if it receives no signal within 30 seconds it
+// exits with code 1 (test failure).
+func buildSIGTERMHelper(t *testing.T, workDir string) string {
+	t.Helper()
+
+	src := `package main
+import (
+	"context"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+)
+func main() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM)
+
+	select {
+	case <-sigCh:
+		// SIGTERM received; exit cleanly.
+		os.Exit(0)
+	case <-ctx.Done():
+		// Timed out without receiving SIGTERM.
+		os.Exit(1)
+	}
+}
+`
+	srcFile := filepath.Join(workDir, "sigterm_helper.go")
+	if err := os.WriteFile(srcFile, []byte(src), 0644); err != nil {
+		t.Fatalf("write sigterm helper: %v", err)
+	}
+
+	binary := filepath.Join(workDir, "sigterm_helper")
+	cmd := exec.Command("go", "build", "-o", binary, srcFile)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build sigterm helper: %v\n%s", err, out)
+	}
+	return binary
 }
 
 // TestShutdownTimeout_Honored verifies the option type is usable.
