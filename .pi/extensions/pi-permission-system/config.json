@@ -1,0 +1,58 @@
+{
+  "$schema": "https://raw.githubusercontent.com/gotgenes/pi-permission-system/main/schemas/permissions.schema.json",
+  "permission": {
+    "*": "allow",
+    "external_directory": "deny",
+    "path": {
+      "*": "allow",
+      "*.env": "deny",
+      "*.key": "deny",
+      "*.pem": "deny",
+      "secrets/*": "deny"
+    },
+    "read": {
+      "*": "allow",
+      "*.env": "deny",
+      "*.key": "deny",
+      "*.pem": "deny",
+      "secrets/*": "deny"
+    },
+    "edit": {
+      "*": "allow",
+      ".git/*": "deny"
+    },
+    "write": {
+      "*": "allow",
+      ".git/*": "deny"
+    },
+    "bash": {
+      "*": "allow",
+      "rm -rf /": "deny",
+      "rm -rf /*": "deny",
+      "rm -rf ~": "deny",
+      "rm -rf ~/*": "deny",
+      "rm -fr /": "deny",
+      "rm -fr /*": "deny",
+      "rm -fr ~": "deny",
+      "sudo *": "deny",
+      "su *": "deny",
+      "chmod -R /": "deny",
+      "chmod -R ~": "deny",
+      "chown -R *": "deny",
+      "dd *": "deny",
+      "mkfs *": "deny",
+      "fdisk *": "deny",
+      "curl * | sh": "deny",
+      "curl * | bash": "deny",
+      "wget * | sh": "deny",
+      "wget * | bash": "deny",
+      "git push --force *": "deny",
+      "git push -f *": "deny",
+      "git reset --hard *": "deny",
+      "git clean -fd*": "deny",
+      "git clean -fdx*": "deny",
+      ": () { :|:& };:": "deny",
+      "git commit --amend *": "deny"
+    }
+  }
+}

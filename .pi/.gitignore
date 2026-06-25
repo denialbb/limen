@@ -1,0 +1,8 @@
+# Ignore all files in the .pi folder by default
+*
+
+# Allow .gitignore and the permission config file to be tracked in git
+!.gitignore
+!/extensions/
+!/extensions/pi-permission-system/
+!/extensions/pi-permission-system/config.json
