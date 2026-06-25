@@ -27,6 +27,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/denialbb/limen/internal/bus"
 	"github.com/denialbb/limen/internal/git"
 	"github.com/denialbb/limen/internal/ndjson"
 	"github.com/denialbb/limen/internal/orchestrator"
@@ -120,7 +121,7 @@ func (sp *subprocess) watchShutdown(watcherCtx, parentCtx context.Context) {
 	_ = sp.cmd.Process.Signal(syscall.SIGTERM)
 	_ = sp.closer.Close()
 
-	// Give the process a chance to exit gracefully.
+	// Wait for the process to exit after SIGTERM
 	graceful := make(chan struct{}, 1)
 	go func() {
 		_ = sp.cmd.Wait()
@@ -287,7 +288,7 @@ func (w *ndjsonWorker) ProduceSolution(ctx context.Context, task *state.Task, wt
 
 		switch env.Kind {
 		case ndjson.KindToolRequest:
-			if err := w.dispatchToolRequest(sp.enc, env, wt); err != nil {
+			if err := w.dispatchToolRequest(sp.enc, env, wt, task.ID, em); err != nil {
 				return err
 			}
 		case ndjson.KindEvent:
@@ -310,10 +311,19 @@ func (w *ndjsonWorker) ProduceSolution(ctx context.Context, task *state.Task, wt
 
 // dispatchToolRequest handles a single tool_request from the worker.
 // Currently only file.write is supported.
-func (w *ndjsonWorker) dispatchToolRequest(enc *ndjson.Encoder, env *ndjson.Envelope, wt *git.Worktree) error {
+func (w *ndjsonWorker) dispatchToolRequest(enc *ndjson.Encoder, env *ndjson.Envelope, wt *git.Worktree, taskID string, em orchestrator.Emitter) error {
 	req := env.ToolReq
 	if req == nil {
 		return fmt.Errorf("remote: tool_request with nil ToolReq")
+	}
+
+	if em != nil {
+		em.Publish(&bus.WorkerToolCall{
+			TaskID:    taskID,
+			Tool:      req.Tool,
+			Args:      string(req.Args),
+			Timestamp: time.Now(),
+		})
 	}
 
 	var args map[string]any
@@ -323,14 +333,14 @@ func (w *ndjsonWorker) dispatchToolRequest(enc *ndjson.Encoder, env *ndjson.Enve
 
 	switch req.Tool {
 	case ndjson.ToolFileWrite:
-		return w.handleFileWrite(enc, req.ID, args, wt)
+		return w.handleFileWrite(enc, req.ID, args, wt, taskID, em)
 	default:
 		return writeToolError(enc, req.ID, fmt.Sprintf("unknown tool: %q", req.Tool))
 	}
 }
 
 // handleFileWrite writes a file to the worktree, rejecting path escapes.
-func (w *ndjsonWorker) handleFileWrite(enc *ndjson.Encoder, reqID string, args map[string]any, wt *git.Worktree) error {
+func (w *ndjsonWorker) handleFileWrite(enc *ndjson.Encoder, reqID string, args map[string]any, wt *git.Worktree, taskID string, em orchestrator.Emitter) error {
 	path, _ := args["path"].(string)
 	content, _ := args["content"].(string)
 
@@ -354,6 +364,15 @@ func (w *ndjsonWorker) handleFileWrite(enc *ndjson.Encoder, reqID string, args m
 	}
 	if err := os.WriteFile(absPath, []byte(content), 0644); err != nil {
 		return writeToolError(enc, reqID, fmt.Sprintf("file.write: write: %v", err))
+	}
+
+	if em != nil {
+		em.Publish(&bus.WorkerFileEdit{
+			TaskID:    taskID,
+			Path:      path,
+			Op:        "write",
+			Timestamp: time.Now(),
+		})
 	}
 
 	return enc.EncodeToolResponse(&ndjson.ToolResponse{
@@ -408,14 +427,78 @@ func (v *ndjsonValidator) Evaluate(ctx context.Context, task *state.Task, wt *gi
 		return false, "", fmt.Errorf("remote: write validator request: %w", err)
 	}
 
-	result, err := readResultEvent(sp.dec)
-	if err != nil {
-		return false, "", err
-	}
+	for {
+		env, err := sp.dec.Decode()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return false, "", fmt.Errorf("remote: validator subprocess exited before verdict event")
+			}
+			if ctx.Err() != nil {
+				return false, "", ctx.Err()
+			}
+			return false, "", fmt.Errorf("remote: validator decode: %w", err)
+		}
 
-	passes, _ := result["passes"].(bool)
-	feedback, _ := result["feedback"].(string)
-	return passes, feedback, nil
+		if env.Kind != ndjson.KindEvent || env.Event == nil {
+			continue
+		}
+
+		switch env.Event.Type {
+		case "error":
+			payload, _ := decodePayload(env.Event.Payload)
+			return false, "", fmt.Errorf("remote: validator error: %v", payload["error"])
+
+		case "validator.examining":
+			if em != nil {
+				payload, _ := decodePayload(env.Event.Payload)
+				var criteria []string
+				if rawCriteria, ok := payload["criteria"]; ok {
+					if list, ok := rawCriteria.([]any); ok {
+						for _, item := range list {
+							if s, ok := item.(string); ok {
+								criteria = append(criteria, s)
+							}
+						}
+					}
+				}
+				em.Publish(&bus.ValidatorExamining{
+					TaskID:    task.ID,
+					Criteria:  criteria,
+					Timestamp: time.Now(),
+				})
+			}
+
+		case "validator.criterion_result":
+			if em != nil {
+				payload, _ := decodePayload(env.Event.Payload)
+				criterion, _ := payload["criterion"].(string)
+				passed, _ := payload["passed"].(bool)
+				detail, _ := payload["detail"].(string)
+				em.Publish(&bus.ValidatorCriterionResult{
+					TaskID:    task.ID,
+					Criterion: criterion,
+					Passed:    passed,
+					Detail:    detail,
+					Timestamp: time.Now(),
+				})
+			}
+
+		case "validator.verdict":
+			payload, _ := decodePayload(env.Event.Payload)
+			passes, _ := payload["passes"].(bool)
+			feedback, _ := payload["feedback"].(string)
+
+			if em != nil {
+				em.Publish(&bus.ValidatorVerdict{
+					TaskID:    task.ID,
+					Passes:    passes,
+					Feedback:  feedback,
+					Timestamp: time.Now(),
+				})
+			}
+			return passes, feedback, nil
+		}
+	}
 }
 
 // --- helpers ---------------------------------------------------------------

@@ -195,28 +195,93 @@ class Runtime:
         # --- tool calls (worker only) ---------------------------------------
         # NODE: the runtime owns the bidirectional tool-call loop so
         # cognitive functions stay pure (entry, request) -> result.
+        delay = float(os.environ.get("LIMEN_MOCK_DELAY", "0"))
+
+        if delay > 0:
+            time.sleep(delay)
+
         if role == "worker":
             for tc in entry.get("tool_calls", []):
+                if delay > 0:
+                    time.sleep(delay)
                 self.request_tool(tc["name"], tc["args"])
+
+        if delay > 0:
+            time.sleep(delay)
 
         # --- cognitive work -------------------------------------------------
         result = cognitive_fn(entry, request_env)
 
+        if delay > 0:
+            time.sleep(delay)
+
         # --- write result event ---------------------------------------------
         task_id = _extract_task_id(request_env)
-        event_type = _event_type_for_role(role)
 
-        self._write_envelope(
-            {
+        if role == "validator":
+            criteria_list = result.get("criteria", [])
+            criteria_names = [c.get("name") for c in criteria_list if isinstance(c, dict) and "name" in c]
+
+            # Emit validator.examining
+            self._write_envelope({
                 "kind": "event",
                 "event": {
-                    "type": event_type,
+                    "type": "validator.examining",
                     "task_id": task_id,
-                    "payload": result,
+                    "payload": {
+                        "criteria": criteria_names,
+                    },
                     "timestamp": _now_ms(),
                 },
-            }
-        )
+            })
+            if delay > 0:
+                time.sleep(delay)
+
+            # Emit each validator.criterion_result
+            for c in criteria_list:
+                if isinstance(c, dict):
+                    self._write_envelope({
+                        "kind": "event",
+                        "event": {
+                            "type": "validator.criterion_result",
+                            "task_id": task_id,
+                            "payload": {
+                                "criterion": c.get("name"),
+                                "passed": c.get("passes"),
+                                "detail": c.get("detail"),
+                            },
+                            "timestamp": _now_ms(),
+                        },
+                    })
+                    if delay > 0:
+                        time.sleep(delay)
+
+            # Emit final validator.verdict
+            self._write_envelope({
+                "kind": "event",
+                "event": {
+                    "type": "validator.verdict",
+                    "task_id": task_id,
+                    "payload": {
+                        "passes": result.get("passes"),
+                        "feedback": result.get("feedback"),
+                    },
+                    "timestamp": _now_ms(),
+                },
+            })
+        else:
+            event_type = _event_type_for_role(role)
+            self._write_envelope(
+                {
+                    "kind": "event",
+                    "event": {
+                        "type": event_type,
+                        "task_id": task_id,
+                        "payload": result,
+                        "timestamp": _now_ms(),
+                    },
+                }
+            )
 
 
 # ----------------------------------------------------------------------

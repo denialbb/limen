@@ -102,6 +102,12 @@ func (m *worktreeManagerImpl) ProvisionWorktree(ctx context.Context, baseCommit,
 // complete proposed patch. New untracked files are included by marking them with
 // intent-to-add before diffing.
 func (m *worktreeManagerImpl) GetWorktreeDiff(ctx context.Context, wt *Worktree) (string, error) {
+	resetCmd := exec.CommandContext(ctx, "git", "reset")
+	resetCmd.Dir = wt.Path
+	if err := resetCmd.Run(); err != nil {
+		return "", fmt.Errorf("git reset failed: %w", err)
+	}
+
 	addCmd := exec.CommandContext(ctx, "git", "add", "-N", ".")
 	addCmd.Dir = wt.Path
 	if err := addCmd.Run(); err != nil {

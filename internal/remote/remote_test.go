@@ -15,10 +15,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denialbb/limen/internal/bus"
 	"github.com/denialbb/limen/internal/git"
 	"github.com/denialbb/limen/internal/ndjson"
 	"github.com/denialbb/limen/internal/orchestrator"
 	"github.com/denialbb/limen/internal/remote"
+	"github.com/denialbb/limen/internal/state"
 )
 
 // --- test helper: canned NDJSON over io.Reader/Writer pairs ----------------
@@ -739,5 +741,66 @@ func TestWorker_SynchronousSingleFlight(t *testing.T) {
 	}
 	if env3.Kind != ndjson.KindEvent {
 		t.Fatalf("expected event, got kind=%q", env3.Kind)
+	}
+}
+
+type recordEmitter struct {
+	events []bus.Event
+}
+
+func (r *recordEmitter) Publish(e bus.Event) {
+	r.events = append(r.events, e)
+}
+
+func TestValidator_StreamingSubprocess(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tmpDir := t.TempDir()
+
+	helperPath := buildWorkerHelper(t, tmpDir, `{"kind":"event","event":{"type":"validator.examining","payload":{"criteria":["compiles","correctness"]}}}
+{"kind":"event","event":{"type":"validator.criterion_result","payload":{"criterion":"compiles","passed":true,"detail":"OK"}}}
+{"kind":"event","event":{"type":"validator.criterion_result","payload":{"criterion":"correctness","passed":false,"detail":"off-by-one"}}}
+{"kind":"event","event":{"type":"validator.verdict","payload":{"passes":false,"feedback":"Solution has bug"}}}`)
+
+	mockGitClient := &mockGit{diff: "mock diff"}
+	v := remote.NewValidator([]string{helperPath}, mockGitClient)
+
+	var recorder recordEmitter
+	passes, feedback, err := v.Evaluate(ctx, &state.Task{ID: "task-1"}, &git.Worktree{Path: tmpDir}, &recorder)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if passes {
+		t.Error("expected passes to be false")
+	}
+	if feedback != "Solution has bug" {
+		t.Errorf("expected feedback 'Solution has bug', got %q", feedback)
+	}
+
+	// Verify events were emitted
+	if len(recorder.events) != 4 { // examinations, criterion_result x2, verdict
+		t.Fatalf("expected 4 events, got %d", len(recorder.events))
+	}
+
+	ev1, ok := recorder.events[0].(*bus.ValidatorExamining)
+	if !ok || len(ev1.Criteria) != 2 || ev1.Criteria[0] != "compiles" || ev1.Criteria[1] != "correctness" {
+		t.Errorf("unexpected first event: %+v", recorder.events[0])
+	}
+
+	ev2, ok := recorder.events[1].(*bus.ValidatorCriterionResult)
+	if !ok || ev2.Criterion != "compiles" || !ev2.Passed || ev2.Detail != "OK" {
+		t.Errorf("unexpected second event: %+v", recorder.events[1])
+	}
+
+	ev3, ok := recorder.events[2].(*bus.ValidatorCriterionResult)
+	if !ok || ev3.Criterion != "correctness" || ev3.Passed || ev3.Detail != "off-by-one" {
+		t.Errorf("unexpected third event: %+v", recorder.events[2])
+	}
+
+	ev4, ok := recorder.events[3].(*bus.ValidatorVerdict)
+	if !ok || ev4.Passes || ev4.Feedback != "Solution has bug" {
+		t.Errorf("unexpected fourth event: %+v", recorder.events[3])
 	}
 }
