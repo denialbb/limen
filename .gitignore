@@ -59,3 +59,5 @@ limen.db*
 .ralph_session
 .ralph_session.err
 state.json
+.demo-hitl.db
+/demo/
