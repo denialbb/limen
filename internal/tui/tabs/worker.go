@@ -36,6 +36,7 @@ func (w WorkerTab) SetSize(width, height int) WorkerTab {
 	}
 	w.viewport.Width = width
 	w.viewport.Height = height
+	w.viewport.SetContent(wrapLines(w.lines, width))
 	return w
 }
 
@@ -60,17 +61,17 @@ func (w WorkerTab) handleEvent(ev bus.Event) WorkerTab {
 			"Worker started: %s (base: %s, retry: %d)",
 			e.WorktreePath, baseCommitLabel(e.BaseCommit), e.Retry,
 		)
-		appendLine(&w.lines, &w.viewport, e.Timestamp, body)
+		appendLine(&w.lines, &w.viewport, w.viewport.Width, e.Timestamp, body)
 	case *bus.WorkerToolCall:
-		appendLine(&w.lines, &w.viewport, e.Timestamp, "Tool call: "+e.Tool)
+		appendLine(&w.lines, &w.viewport, w.viewport.Width, e.Timestamp, "Tool call: "+e.Tool)
 	case *bus.WorkerFileEdit:
 		body := fmt.Sprintf("File edit: %s (%s)", e.Path, e.Op)
-		appendLine(&w.lines, &w.viewport, e.Timestamp, body)
+		appendLine(&w.lines, &w.viewport, w.viewport.Width, e.Timestamp, body)
 	case *bus.WorkerFinished:
-		appendLine(&w.lines, &w.viewport, e.Timestamp, "Worker finished")
+		appendLine(&w.lines, &w.viewport, w.viewport.Width, e.Timestamp, "Worker finished")
 	case *bus.ConflictDetected:
 		body := fmt.Sprintf("Conflict detected: %d region(s)", len(e.Regions))
-		appendLine(&w.lines, &w.viewport, e.Timestamp, body)
+		appendLine(&w.lines, &w.viewport, w.viewport.Width, e.Timestamp, body)
 	}
 	return w
 }

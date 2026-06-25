@@ -65,12 +65,18 @@ func (h Header) Update(msg tea.Msg) (Header, tea.Cmd) {
 }
 
 func (h Header) View() string {
-	bar, brand, field, state, count, filler := theme.HeaderStyles(h.width)
+	bar, brand, field, stateStyle, count, filler := theme.HeaderStyles(h.width)
 
 	stateName := h.stateName()
-	marker := h.spinnerView
+	var markerView string
 	if h.finalized {
-		marker = "done"
+		if h.state == state.StateCommitted {
+			markerView = field.Copy().Bold(true).Foreground(lipgloss.Color("#a6e3a1")).Render("✓")
+		} else {
+			markerView = field.Render("done")
+		}
+	} else {
+		markerView = field.Render(h.spinnerView)
 	}
 
 	left := lipgloss.JoinHorizontal(lipgloss.Top,
@@ -79,9 +85,9 @@ func (h Header) View() string {
 	)
 
 	right := lipgloss.JoinHorizontal(lipgloss.Top,
-		state.Render(stateName),
+		stateStyle.Render(stateName),
 		count.Render(fmt.Sprintf("r:%d e:%d", h.retryCount, h.expandCount)),
-		field.Render(marker),
+		markerView,
 	)
 
 	if h.width <= 0 {

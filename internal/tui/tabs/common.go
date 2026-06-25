@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/denialbb/limen/internal/bus"
 )
 
@@ -19,15 +20,39 @@ type EventMsg struct {
 	Event bus.Event
 }
 
+// EventFormatter is assigned by the parent tui package at init to format and color event log lines without introducing a cyclic dependency.
+var EventFormatter func(time.Time, string) string
+
+// FooterStyle is assigned by the parent tui package at init to style the timeline completion footer.
+var FooterStyle lipgloss.Style
+
 // timestampFormat is the compact clock format used in tab output. Keeping it
 // here lets every tab share the same rendering without re-declaring literals.
 const timestampFormat = "15:04:05"
 
 // appendLine is a small helper shared by tabs to push a new line into the
 // accumulated output and refresh the viewport content.
-func appendLine(lines *[]string, vp lineSetter, ts time.Time, body string) {
-	*lines = append(*lines, "["+ts.Format(timestampFormat)+"] "+body)
-	vp.SetContent(strings.Join(*lines, "\n"))
+func appendLine(lines *[]string, vp lineSetter, vpWidth int, ts time.Time, body string) {
+	var styled string
+	if EventFormatter != nil {
+		styled = EventFormatter(ts, body)
+	} else {
+		styled = "[" + ts.Format(timestampFormat) + "] " + body
+	}
+	*lines = append(*lines, styled)
+	vp.SetContent(wrapLines(*lines, vpWidth))
+}
+
+// wrapLines wraps each line in lines to the specified width using lipgloss.
+func wrapLines(lines []string, width int) string {
+	if width <= 0 {
+		return strings.Join(lines, "\n")
+	}
+	var wrapped []string
+	for _, line := range lines {
+		wrapped = append(wrapped, lipgloss.NewStyle().Width(width).Render(line))
+	}
+	return strings.Join(wrapped, "\n")
 }
 
 // lineSetter is the narrow interface tabs require from their viewport so the

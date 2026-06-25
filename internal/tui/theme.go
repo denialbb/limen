@@ -1,6 +1,14 @@
 package tui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"regexp"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/denialbb/limen/internal/tui/tabs"
+)
 
 // Theme holds all visual constants for the TUI. Every magic number in the
 // rendering code must come from here.
@@ -24,46 +32,59 @@ type Theme struct {
 	SeparatorColor string
 	SeparatorRune  string
 	SeparatorPadV  int
+
+	// Footer constants.
+	FooterBgColor string
+	FooterFgColor string
+
+	// Event coloring constants.
+	TimestampColor string
+	EventTextColor string
+	KeywordColors  map[string]string
 }
 
 func NewTheme() *Theme {
 	return &Theme{
-		HeaderBgColor:    "63",
-		HeaderFgColor:    "15",
+		HeaderBgColor:    "#313244", // Surface 0
+		HeaderFgColor:    "#cdd6f4", // Text
 		HeaderPadH:       1,
-		HeaderFieldColor: "252",
-		HeaderStateColor: "213",
-		HeaderCountColor: "250",
+		HeaderFieldColor: "#a6adc8", // Subtext 0
+		HeaderStateColor: "#cba6f7", // Mauve
+		HeaderCountColor: "#9399b2", // Subtext 1
 
-		TabActiveBgColor: "63",
-		TabActiveFgColor: "15",
-		TabInactiveColor: "245",
+		TabActiveBgColor: "#cba6f7", // Mauve
+		TabActiveFgColor: "#11111b", // Crust
+		TabInactiveColor: "#6c7086", // Overlay 0
 		TabPadH:          1,
 		TabBoundaryPad:   2,
 
-		SeparatorColor: "240",
+		SeparatorColor: "#45475a", // Surface 1
 		SeparatorRune:  "─",
 		SeparatorPadV:  0,
+
+		FooterBgColor: "#45475a", // Surface 1
+		FooterFgColor: "#f5c2e7", // Pink
+
+		TimestampColor: "#585b70", // Pale color (Surface 2)
+		EventTextColor: "#cdd6f4", // Normal foreground (Text)
+		KeywordColors: map[string]string{
+			"PASS":      "#a6e3a1", // Green
+			"FAIL":      "#f38ba8", // Red
+			"APPROVED":  "#a6e3a1", // Green
+			"REVISION":  "#f9e2af", // Yellow
+			"PROCEED":   "#a6e3a1", // Green
+			"ABORT":     "#f38ba8", // Red
+			"CONFLICT":  "#f9e2af", // Yellow
+			"FINALIZED": "#f5c2e7", // Pink
+			"CRITICAL":  "#f38ba8", // Red
+			"WARNING":   "#f9e2af", // Yellow
+			"DONE":      "#a6e3a1", // Green
+			"COMMITTED": "#a6e3a1", // Green
+		},
 	}
 }
 
-// HeaderStyles builds the lipgloss styles for the header bar. Every segment
-// carries the bar's Background so that nested ANSI resets from inner Render
-// calls do not break the full-width background fill. The bar style has Width
-// set so lipgloss pads any shortfall with bg-styled whitespace.
-//
-// The pattern follows lipgloss's own canonical status-bar example:
-//   - bar:    outer wrapper, Background + Width, fills any edge shortfall.
-//   - brand:  bold, high-contrast fg, bg from base, Padding for bg-covered spacing.
-//   - field:  normal fg, bg from base, Padding for bg-covered spacing.
-//   - state:  bold accent fg, bg from base, Padding for bg-covered spacing.
-//   - count:  muted fg, bg from base, Padding for bg-covered spacing.
-//   - filler: bg only, flexible Width to push the right group to the edge.
-//
-// Spacing between segments comes from Padding (which lipgloss colors with the
-// segment's own background), never from literal " " characters. This is the
-// critical rule: plain spaces inside a Background-wrapped string are NOT
-// bg-styled by lipgloss's renderer.
+// HeaderStyles builds the lipgloss styles for the header bar.
 func (t *Theme) HeaderStyles(width int) (bar, brand, field, state, count, filler lipgloss.Style) {
 	bg := lipgloss.Color(t.HeaderBgColor)
 
@@ -115,5 +136,50 @@ func (t *Theme) TabStyles() (active, inactive lipgloss.Style) {
 	return
 }
 
+// FooterStyle returns a style for rendering the timeline completion footer.
+func (t *Theme) FooterStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Bold(true).
+		Background(lipgloss.Color(t.FooterBgColor)).
+		Foreground(lipgloss.Color(t.FooterFgColor)).
+		Padding(0, 1)
+}
+
+var (
+	keywordRegex *regexp.Regexp
+	regexOnce    sync.Once
+)
+
+// FormatEventLine colors the timestamp, body, and matched keywords.
+func (t *Theme) FormatEventLine(ts time.Time, body string) string {
+	tsStr := "[" + ts.Format("15:04:05") + "]"
+	styledTs := lipgloss.NewStyle().Foreground(lipgloss.Color(t.TimestampColor)).Render(tsStr)
+
+	regexOnce.Do(func() {
+		var keys []string
+		for k := range t.KeywordColors {
+			keys = append(keys, regexp.QuoteMeta(k))
+		}
+		pattern := `\b(` + strings.Join(keys, "|") + `)\b`
+		keywordRegex = regexp.MustCompile(pattern)
+	})
+
+	styledBody := keywordRegex.ReplaceAllStringFunc(body, func(match string) string {
+		if color, exists := t.KeywordColors[match]; exists {
+			return lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Bold(true).Render(match)
+		}
+		return match
+	})
+
+	styledBody = lipgloss.NewStyle().Foreground(lipgloss.Color(t.EventTextColor)).Render(styledBody)
+
+	return styledTs + " " + styledBody
+}
+
 // package-level theme singleton used by header, tab, and model.
 var theme = NewTheme()
+
+func init() {
+	tabs.EventFormatter = theme.FormatEventLine
+	tabs.FooterStyle = theme.FooterStyle()
+}

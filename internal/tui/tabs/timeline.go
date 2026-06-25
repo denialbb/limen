@@ -59,6 +59,7 @@ func (t TimelineTab) SetSize(width, height int) TimelineTab {
 	}
 	t.viewport.Width = width
 	t.viewport.Height = height
+	t.viewport.SetContent(wrapLines(t.lines, width))
 	return t
 }
 
@@ -85,7 +86,7 @@ func (t TimelineTab) handleEvent(ev bus.Event) TimelineTab {
 	if summary == "" {
 		return t
 	}
-	appendLine(&t.lines, &t.viewport, ev.Time(), summary)
+	appendLine(&t.lines, &t.viewport, t.viewport.Width, ev.Time(), summary)
 	if fin, ok := ev.(*bus.TaskFinalized); ok {
 		t.finalized = true
 		t.finalState = string(fin.FinalState)
@@ -133,7 +134,11 @@ func (t TimelineTab) renderFooter() string {
 	if t.finalOutputRef != "" {
 		body += "\noutput: " + truncate(t.finalOutputRef, 60)
 	}
-	return footerStyle.Render(body)
+	style := FooterStyle
+	if style.Copy().GetBackground() == lipgloss.Color("") {
+		style = footerStyle
+	}
+	return style.Render(body)
 }
 
 // View renders the accumulated timeline through the viewport, and appends

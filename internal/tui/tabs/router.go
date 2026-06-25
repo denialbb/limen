@@ -40,6 +40,7 @@ func (r RouterTab) SetSize(width, height int) RouterTab {
 	}
 	r.viewport.Width = width
 	r.viewport.Height = height
+	r.viewport.SetContent(wrapLines(r.lines, width))
 	return r
 }
 
@@ -65,18 +66,18 @@ func (r RouterTab) handleEvent(ev bus.Event) RouterTab {
 	case *bus.ContextBuilt:
 		// NOTE: Snapshot size is in bytes per the taxonomy; manifestRef can be
 		// empty when the v1 retriever stub emits no manifest.
-		appendLine(&r.lines, &r.viewport, e.Timestamp,
+		appendLine(&r.lines, &r.viewport, r.viewport.Width, e.Timestamp,
 			"Context built: "+strconv.Itoa(e.SnapshotSize)+" bytes")
 	case *bus.RouterExamining:
 		entropyText := "entropy=" + floatToText(e.Entropy)
-		appendLine(&r.lines, &r.viewport, e.Timestamp, "Router examining: "+entropyText)
+		appendLine(&r.lines, &r.viewport, r.viewport.Width, e.Timestamp, "Router examining: "+entropyText)
 	case *bus.RouterDecisionEvent:
 		// decision + rationale on a single line, with expand count when > 0
 		body := "Router decision: " + string(e.Decision) + " — " + e.Rationale
 		if e.ExpandCount > 0 {
 			body += " (expand=" + strconv.Itoa(e.ExpandCount) + ")"
 		}
-		appendLine(&r.lines, &r.viewport, e.Timestamp, body)
+		appendLine(&r.lines, &r.viewport, r.viewport.Width, e.Timestamp, body)
 	}
 	return r
 }

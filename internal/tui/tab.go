@@ -5,18 +5,21 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/lucasb-eyer/go-colorful"
 )
 
 type TabStrip struct {
-	tabs      []string
-	activeIdx int
-	width     int
+	tabs        []string
+	activeIdx   int
+	width       int
+	flashFrames []int
 }
 
 func NewTabStrip() TabStrip {
 	return TabStrip{
-		tabs:      []string{"Router", "Worker", "Validator", "Timeline"},
-		activeIdx: 0,
+		tabs:        []string{"Router", "Worker", "Validator", "Timeline"},
+		activeIdx:   0,
+		flashFrames: make([]int, 4),
 	}
 }
 
@@ -41,6 +44,25 @@ func (t TabStrip) SetSize(width int) TabStrip {
 	return t
 }
 
+func (t TabStrip) Flash(tab tabID) TabStrip {
+	if int(tab) >= 0 && int(tab) < len(t.flashFrames) {
+		t.flashFrames[tab] = 10
+	}
+	return t
+}
+
+func interpolateHex(color1, color2 string, t float64) string {
+	c1, err1 := colorful.Hex(color1)
+	c2, err2 := colorful.Hex(color2)
+	if err1 != nil || err2 != nil {
+		if t < 0.5 {
+			return color1
+		}
+		return color2
+	}
+	return c1.BlendLuv(c2, t).Clamped().Hex()
+}
+
 func (t TabStrip) View() string {
 	active, inactive := theme.TabStyles()
 
@@ -51,6 +73,26 @@ func (t TabStrip) View() string {
 		if i == t.activeIdx {
 			style = active
 		}
+
+		if i < len(t.flashFrames) && t.flashFrames[i] > 0 {
+			var intensity float64
+			frame := t.flashFrames[i]
+			if frame >= 5 {
+				intensity = float64(10-frame) / 5.0
+			} else {
+				intensity = float64(frame) / 5.0
+			}
+
+			flashColor := "#f2cdcd" // Catppuccin Flamingo
+			if i == t.activeIdx {
+				bg := interpolateHex(theme.TabActiveBgColor, flashColor, intensity)
+				style = style.Background(lipgloss.Color(bg))
+			} else {
+				fg := interpolateHex(theme.TabInactiveColor, flashColor, intensity)
+				style = style.Foreground(lipgloss.Color(fg))
+			}
+		}
+
 		rendered[i] = style.Render(label)
 		totalWidth += lipgloss.Width(rendered[i])
 	}

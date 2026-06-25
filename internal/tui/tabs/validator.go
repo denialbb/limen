@@ -37,6 +37,7 @@ func (v ValidatorTab) SetSize(width, height int) ValidatorTab {
 	}
 	v.viewport.Width = width
 	v.viewport.Height = height
+	v.viewport.SetContent(wrapLines(v.lines, width))
 	return v
 }
 
@@ -57,7 +58,7 @@ func (v ValidatorTab) Update(msg tea.Msg) (ValidatorTab, tea.Cmd) {
 func (v ValidatorTab) handleEvent(ev bus.Event) ValidatorTab {
 	switch e := ev.(type) {
 	case *bus.ValidatorExamining:
-		appendLine(&v.lines, &v.viewport, e.Timestamp,
+		appendLine(&v.lines, &v.viewport, v.viewport.Width, e.Timestamp,
 			fmt.Sprintf("Validator examining: %d criterion(s)", len(e.Criteria)))
 	case *bus.ValidatorCriterionResult:
 		verdict := "FAIL"
@@ -68,9 +69,9 @@ func (v ValidatorTab) handleEvent(ev bus.Event) ValidatorTab {
 		if e.Detail != "" {
 			body += " — " + e.Detail
 		}
-		appendLine(&v.lines, &v.viewport, e.Timestamp, body)
+		appendLine(&v.lines, &v.viewport, v.viewport.Width, e.Timestamp, body)
 	case *bus.ValidatorVerdict:
-		appendLine(&v.lines, &v.viewport, e.Timestamp, formatVerdict(e))
+		appendLine(&v.lines, &v.viewport, v.viewport.Width, e.Timestamp, formatVerdict(e))
 	}
 	return v
 }

@@ -14,6 +14,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -68,10 +69,11 @@ type Model struct {
 	validator tabs.ValidatorTab
 	timeline  tabs.TimelineTab
 
-	eventCh    <-chan bus.Event
-	spinner    spinner.Model
-	finalized  bool
-	finalState state.TaskState
+	eventCh         <-chan bus.Event
+	spinner         spinner.Model
+	finalized       bool
+	finalState      state.TaskState
+	flashTickActive bool
 
 	quitting bool
 }
@@ -132,6 +134,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spinner, cmd = m.spinner.Update(msg)
 		m.header = m.header.SetSpinnerView(m.spinner.View())
 		return m, cmd
+
+	case tabFlashTickMsg:
+		m.flashTickActive = false
+		anyFlashing := false
+		for i := 0; i < len(m.tabStrip.flashFrames); i++ {
+			if m.tabStrip.flashFrames[i] > 0 {
+				m.tabStrip.flashFrames[i]--
+				if m.tabStrip.flashFrames[i] > 0 {
+					anyFlashing = true
+				}
+			}
+		}
+		if anyFlashing {
+			m.flashTickActive = true
+			return m, tickTabFlash()
+		}
+		return m, nil
 
 	case busEventMsg:
 		return m.handleBusEvent(msg)
@@ -249,51 +268,74 @@ func (m Model) handleBusEvent(msg busEventMsg) (tea.Model, tea.Cmd) {
 	m.header, _ = m.header.Update(tabs.EventMsg{Event: ev})
 	m.timeline, _ = m.timeline.Update(tabs.EventMsg{Event: ev})
 
+	var tabToFlash int = -1
 	switch ev := ev.(type) {
 	case *bus.TaskStateChanged:
 
 	case *bus.ContextBuilt:
 		m.router, _ = m.router.Update(tabs.EventMsg{Event: ev})
+		tabToFlash = int(tabRouter)
 
 	case *bus.RouterExamining:
 		m.router, _ = m.router.Update(tabs.EventMsg{Event: ev})
+		tabToFlash = int(tabRouter)
 
 	case *bus.RouterDecisionEvent:
 		m.router, _ = m.router.Update(tabs.EventMsg{Event: ev})
+		tabToFlash = int(tabRouter)
 
 	case *bus.WorkerStarted:
 		m.worker, _ = m.worker.Update(tabs.EventMsg{Event: ev})
+		tabToFlash = int(tabWorker)
 
 	case *bus.WorkerToolCall:
 		m.worker, _ = m.worker.Update(tabs.EventMsg{Event: ev})
+		tabToFlash = int(tabWorker)
 
 	case *bus.WorkerFileEdit:
 		m.worker, _ = m.worker.Update(tabs.EventMsg{Event: ev})
+		tabToFlash = int(tabWorker)
 
 	case *bus.WorkerFinished:
 		m.worker, _ = m.worker.Update(tabs.EventMsg{Event: ev})
+		tabToFlash = int(tabWorker)
 
 	case *bus.ConflictDetected:
 		m.worker, _ = m.worker.Update(tabs.EventMsg{Event: ev})
+		tabToFlash = int(tabWorker)
 
 	case *bus.ValidatorExamining:
 		m.validator, _ = m.validator.Update(tabs.EventMsg{Event: ev})
+		tabToFlash = int(tabValidator)
 
 	case *bus.ValidatorCriterionResult:
 		m.validator, _ = m.validator.Update(tabs.EventMsg{Event: ev})
+		tabToFlash = int(tabValidator)
 
 	case *bus.ValidatorVerdict:
 		m.validator, _ = m.validator.Update(tabs.EventMsg{Event: ev})
+		tabToFlash = int(tabValidator)
 
 	case *bus.TaskFinalized:
 		m.finalized = true
 		m.finalState = ev.FinalState
 		setCurrentTab(&m, tabTimeline)
+		tabToFlash = int(tabTimeline)
 
 	case *bus.OrchestratorError:
+		tabToFlash = int(tabTimeline)
 	}
 
-	return m, waitForEvent(m.eventCh)
+	var flashCmd tea.Cmd
+	if tabToFlash != -1 {
+		m.tabStrip = m.tabStrip.Flash(tabID(tabToFlash))
+		if !m.flashTickActive {
+			m.flashTickActive = true
+			flashCmd = tickTabFlash()
+		}
+	}
+
+	return m, tea.Batch(waitForEvent(m.eventCh), flashCmd)
 }
 
 // View renders the header, separator, active tab content, and tab strip in a
@@ -357,7 +399,24 @@ func (m Model) String() string {
 	if !m.finalized {
 		return fmt.Sprintf("task %s: not finalized", m.taskID)
 	}
-	return fmt.Sprintf("task %s: finalized state=%s", m.taskID, m.finalState)
+	sepWidth := m.width
+	if sepWidth <= 0 {
+		sepWidth = 80
+	}
+	sepLine := theme.SeparatorStyle().Render(strings.Repeat(theme.SeparatorRune, sepWidth))
+	return lipgloss.JoinVertical(lipgloss.Left,
+		m.header.View(),
+		sepLine,
+		m.timeline.View(),
+	)
+}
+
+type tabFlashTickMsg struct{}
+
+func tickTabFlash() tea.Cmd {
+	return tea.Tick(50*time.Millisecond, func(t time.Time) tea.Msg {
+		return tabFlashTickMsg{}
+	})
 }
 
 var _ tea.Model = Model{}

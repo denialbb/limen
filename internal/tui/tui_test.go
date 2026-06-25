@@ -8,6 +8,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"github.com/denialbb/limen/internal/bus"
 	"github.com/denialbb/limen/internal/git"
@@ -479,4 +481,37 @@ func typeName(v tea.Msg) string {
 		return full[idx+1:]
 	}
 	return full
+}
+
+func TestNewUIImprovements(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	line := theme.FormatEventLine(time.Now(), "verdict: PASS — check")
+	if !strings.Contains(line, "PASS") {
+		t.Fatalf("FormatEventLine missing PASS keyword")
+	}
+	if !strings.Contains(line, "\x1b[") {
+		t.Fatalf("FormatEventLine missing ANSI styling: %q", line)
+	}
+
+	h := NewHeader("task-1")
+	h.finalized = true
+	h.state = state.StateCommitted
+	h.width = 80
+	hdrView := h.View()
+	if !strings.Contains(stripANSI(hdrView), "✓") {
+		t.Fatalf("Header View did not render tick: %q", stripANSI(hdrView))
+	}
+
+	b := bus.NewChannelBus()
+	defer b.Close()
+	m := newSizedModel(t, "task-str", b)
+	m = publishAndPump(t, m, b, &bus.TaskFinalized{
+		TaskID:     "task-str",
+		FinalState: state.StateCommitted,
+		Timestamp:  time.Now(),
+	})
+	strVal := m.String()
+	if !strings.Contains(stripANSI(strVal), "limen") || !strings.Contains(stripANSI(strVal), "FINAL: COMMITTED") {
+		t.Fatalf("Model.String() did not render header and timeline: %q", stripANSI(strVal))
+	}
 }
