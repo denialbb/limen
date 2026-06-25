@@ -214,6 +214,8 @@ func summarizeEvent(ev bus.Event) string {
 // inputs are ASCII git refs, so this is acceptable for v1; switch to
 // utf8.DecodeRune-based counting if non-ASCII output refs appear in v2.
 func truncate(s string, maxLen int) string {
+	s = strings.ReplaceAll(s, "\r", "")
+	s = strings.ReplaceAll(s, "\n", " ")
 	if len(s) <= maxLen {
 		return s
 	}

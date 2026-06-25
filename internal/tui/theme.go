@@ -2,8 +2,6 @@ package tui
 
 import (
 	"regexp"
-	"strings"
-	"sync"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
@@ -63,7 +61,7 @@ func NewTheme() *Theme {
 		SeparatorPadV:  0,
 
 		FooterBgColor: "#45475a", // Surface 1
-		FooterFgColor: "#f5c2e7", // Pink
+		FooterFgColor: "#fab387", // Peach (high contrast text)
 
 		TimestampColor: "#585b70", // Pale color (Surface 2)
 		EventTextColor: "#cdd6f4", // Normal foreground (Text)
@@ -75,7 +73,7 @@ func NewTheme() *Theme {
 			"PROCEED":   "#a6e3a1", // Green
 			"ABORT":     "#f38ba8", // Red
 			"CONFLICT":  "#f9e2af", // Yellow
-			"FINALIZED": "#f5c2e7", // Pink
+			"FINALIZED": "#74c7ec", // Sapphire
 			"CRITICAL":  "#f38ba8", // Red
 			"WARNING":   "#f9e2af", // Yellow
 			"DONE":      "#a6e3a1", // Green
@@ -145,30 +143,19 @@ func (t *Theme) FooterStyle() lipgloss.Style {
 		Padding(0, 1)
 }
 
-var (
-	keywordRegex *regexp.Regexp
-	regexOnce    sync.Once
-)
+var allCapsRegex = regexp.MustCompile(`\b[A-Z_]{3,}\b`)
 
 // FormatEventLine colors the timestamp, body, and matched keywords.
 func (t *Theme) FormatEventLine(ts time.Time, body string) string {
 	tsStr := "[" + ts.Format("15:04:05") + "]"
 	styledTs := lipgloss.NewStyle().Foreground(lipgloss.Color(t.TimestampColor)).Render(tsStr)
 
-	regexOnce.Do(func() {
-		var keys []string
-		for k := range t.KeywordColors {
-			keys = append(keys, regexp.QuoteMeta(k))
-		}
-		pattern := `\b(` + strings.Join(keys, "|") + `)\b`
-		keywordRegex = regexp.MustCompile(pattern)
-	})
-
-	styledBody := keywordRegex.ReplaceAllStringFunc(body, func(match string) string {
+	styledBody := allCapsRegex.ReplaceAllStringFunc(body, func(match string) string {
 		if color, exists := t.KeywordColors[match]; exists {
 			return lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Bold(true).Render(match)
 		}
-		return match
+		// Fallback to high-contrast Sapphire color for other ALLCAPS keywords
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#74c7ec")).Bold(true).Render(match)
 	})
 
 	styledBody = lipgloss.NewStyle().Foreground(lipgloss.Color(t.EventTextColor)).Render(styledBody)
