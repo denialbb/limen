@@ -241,8 +241,8 @@ func parseConflictMarkers(content string) (base, proposed string) {
 	}
 	endIdx += midIdx + len("\n"+mid+"\n")
 
-	base = content[start+len(ours):midIdx]
-	proposed = content[midIdx+len("\n"+mid+"\n"):endIdx]
+	base = content[start+len(ours) : midIdx]
+	proposed = content[midIdx+len("\n"+mid+"\n") : endIdx]
 	return base, proposed
 }
 
@@ -298,6 +298,16 @@ func (m *worktreeManagerImpl) CommitWorktree(ctx context.Context, taskID string,
 	updateCmd.Dir = m.repoPath
 	if out, err := updateCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("update canonical branch %s: %w, output: %s", m.canonicalBranch, err, string(out))
+	}
+
+	// NOTE: After update-ref advances the branch ref, the main checkout's
+	// working tree and index are stale (HEAD changed but files didn't).
+	// Reset hard to sync them. This is safe because the orchestrator
+	// already verified git.IsValid() (clean tree) before RunTask.
+	resetCmd := exec.CommandContext(ctx, "git", "reset", "--hard", "HEAD")
+	resetCmd.Dir = m.repoPath
+	if out, err := resetCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("reset main working tree: %w, output: %s", err, string(out))
 	}
 
 	return nil
