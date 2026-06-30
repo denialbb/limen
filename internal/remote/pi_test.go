@@ -23,7 +23,6 @@ func TestPiWorkerBackend(t *testing.T) {
 
 	task := &state.Task{
 		ID:          "test-task-1",
-		Description: "Create a file named pi_success.txt with content 'hello'",
 	}
 
 	worker := NewPiWorker(WithShutdownTimeout(1 * time.Second))
