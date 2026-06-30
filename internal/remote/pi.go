@@ -61,8 +61,9 @@ func (w *piWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *gi
 	}
 
 	prompt := map[string]interface{}{
-		"type":   "prompt",
-		"prompt": promptText,
+		"id":      task.ID,
+		"type":    "prompt",
+		"message": promptText,
 	}
 	promptBytes, _ := json.Marshal(prompt)
 	promptBytes = append(promptBytes, '\n')

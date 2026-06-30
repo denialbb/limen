@@ -38,8 +38,9 @@ func TestPiRPCHandshake(t *testing.T) {
 
 	// Send a hardcoded JSONL prompt
 	prompt := map[string]interface{}{
-		"type":   "prompt",
-		"prompt": "Create a file named test.txt containing the word 'success'",
+		"id":      "req-1",
+		"type":    "prompt",
+		"message": "Create a file named test.txt containing the word 'success'",
 	}
 	promptBytes, _ := json.Marshal(prompt)
 	promptBytes = append(promptBytes, '\n')
