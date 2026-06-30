@@ -7,7 +7,7 @@ mkdir -p demo
 cd demo
 
 if [ ! -d ".git" ]; then
-    git init
+    git init -b main
     git config user.email "demo@example.com"
     git config user.name "Demo User"
     
