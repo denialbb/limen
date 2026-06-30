@@ -841,7 +841,7 @@ func (m *mockBlockingWorker) ProduceSolution(ctx context.Context, task *state.Ta
 	if err != nil {
 		return fmt.Errorf("ready-for-review failed: %w, out: %s", err, string(out))
 	}
-	if !strings.Contains(string(out), "mocked verdict") {
+	if !strings.Contains(string(out), `"passes":true`) {
 		return fmt.Errorf("unexpected verdict: %s", string(out))
 	}
 	return nil

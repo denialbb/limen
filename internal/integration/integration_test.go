@@ -22,8 +22,17 @@ import (
 var (
 	binaryOnce  sync.Once
 	binaryPath  string
+	binaryDir   string
 	binaryErr   error
 )
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if binaryDir != "" {
+		os.RemoveAll(binaryDir)
+	}
+	os.Exit(code)
+}
 
 func setupTestRepo(t *testing.T) string {
 	t.Helper()
@@ -212,12 +221,20 @@ func TestFullOrchestrationCycle_ValidatorRetry(t *testing.T) {
 }
 
 // buildLimenBinary compiles cmd/limen into a temp binary and returns its path.
-// The binary is built at most once per test run and cached.
+// The binary is built at most once per test run and cached. We use
+// os.MkdirTemp instead of t.TempDir because the latter is scoped to the
+// calling test; the binary must outlive all tests that share the cache.
 func buildLimenBinary(t *testing.T) string {
 	t.Helper()
 	binaryOnce.Do(func() {
 		root := repoRoot(t)
-		bin := filepath.Join(t.TempDir(), "limen")
+		dir, err := os.MkdirTemp("", "limen-test-bin-*")
+		if err != nil {
+			binaryErr = fmt.Errorf("create temp dir: %w", err)
+			return
+		}
+		binaryDir = dir
+		bin := filepath.Join(dir, "limen")
 		// NODE: Build from the repo root so module resolution finds
 		// internal packages correctly.
 		cmd := exec.Command("go", "build", "-o", bin, "./cmd/limen")
