@@ -18,6 +18,7 @@ These elements are operational exhaust. They are used to make decisions in the m
 - **Reranker scores**: The floating-point confidence scores between query and document pairs.
 - **Embedding vectors**: The raw tensor representations from the MiniLM semantic layer.
 - **Internal model logits**: Token probabilities or generation exhaust from the Worker/Validator.
+- **Fine-grained event streams**: Fine-grained streams stay ephemeral by principle (generation exhaust is transient).
 - **Transient routing heuristics**: The raw entropy values or intermediate math the Router used before emitting the final `proceed/expand/escalate` signal.
 
 ---
