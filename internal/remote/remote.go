@@ -269,6 +269,16 @@ func NewWorker(args []string, opts ...Option) orchestrator.Worker {
 
 // ProduceSolution implements orchestrator.Worker.
 func (w *ndjsonWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *git.Worktree, feedback string, em orchestrator.Emitter) error {
+	if em != nil {
+		em.Publish(&bus.WorkerStarted{
+			TaskID:       task.ID,
+			WorktreePath: wt.Path,
+			BaseCommit:   wt.BaseCommit,
+			Retry:        task.RetryCount,
+			Timestamp:    time.Now(),
+		})
+	}
+
 	req := requestEnvelope{
 		Task:     mustMarshalJSON(taskRequest{ID: task.ID, Description: task.ID}),
 		Feedback: feedback,
@@ -316,6 +326,12 @@ func (w *ndjsonWorker) ProduceSolution(ctx context.Context, task *state.Task, wt
 				return fmt.Errorf("remote: worker error: %v", payload["error"])
 			}
 			// Result event — worker finished successfully.
+			if em != nil {
+				em.Publish(&bus.WorkerFinished{
+					TaskID:    task.ID,
+					Timestamp: time.Now(),
+				})
+			}
 			return nil
 		default:
 			// Ignore other envelope kinds; only tool_request and event
