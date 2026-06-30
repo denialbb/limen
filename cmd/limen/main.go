@@ -206,6 +206,8 @@ func main() {
 		runTaskCmd()
 	case "ready-for-review":
 		runReadyForReviewCmd()
+	case "submit-verdict":
+		runSubmitVerdictCmd()
 	case "tui":
 		// NOTE: Explicit alias for the default bare invocation. Kept so that
 		// subcommand-style invocation remains available alongside the simple form.
@@ -229,6 +231,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  limen tui              Alias for the default interactive TUI\n")
 	fmt.Fprintf(os.Stderr, "  limen run-task         Run a task through the orchestrator (one-shot)\n")
 	fmt.Fprintf(os.Stderr, "  limen ready-for-review Write a ready signal to the DB and poll for a verdict\n")
+	fmt.Fprintf(os.Stderr, "  limen submit-verdict   Record a validation verdict and unblock ready-for-review\n")
 }
 
 // runTUICmd launches the interactive terminal UI.
@@ -526,6 +529,49 @@ func runReadyForReviewCmd() {
 			return
 		}
 		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+func runSubmitVerdictCmd() {
+	flags := flag.NewFlagSet("submit-verdict", flag.ExitOnError)
+	taskID := flags.String("task-id", "", "The ID of the task")
+	dbPath := flags.String("db-path", "limen.db", "Path to the SQLite database")
+	passes := flags.Bool("passes", false, "Whether the solution passes validation")
+	feedback := flags.String("feedback", "", "Validation feedback")
+
+	if err := flags.Parse(os.Args[2:]); err != nil {
+		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
+		os.Exit(1)
+	}
+
+	if *taskID == "" || *feedback == "" {
+		fmt.Fprintf(os.Stderr, "--task-id and --feedback are required\n")
+		flags.Usage()
+		os.Exit(1)
+	}
+
+	store, err := state.NewSQLiteStore(*dbPath)
+	if err != nil {
+		log.Fatalf("Failed to initialize SQLite store: %v", err)
+	}
+	defer store.Close()
+
+	if err := store.RecordValidationDecision(*taskID, *passes, *feedback); err != nil {
+		log.Fatalf("Failed to record validation decision: %v", err)
+	}
+
+	cbID, _, found, err := store.GetPendingCallback(*taskID)
+	if err != nil {
+		log.Fatalf("Error checking for pending callback: %v", err)
+	}
+
+	if found {
+		verdict := fmt.Sprintf(`{"passes":%t,"feedback":%q}`, *passes, *feedback)
+		if err := store.WriteCallbackVerdict(cbID, verdict); err != nil {
+			log.Fatalf("Failed to write callback verdict: %v", err)
+		}
+	} else {
+		log.Printf("No pending callback found for task %s", *taskID)
 	}
 }
 
