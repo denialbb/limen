@@ -331,11 +331,16 @@ func (m Model) handleResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 			rightW = 1
 		}
 
-		routerH := int(float64(contentH) * theme.SplitRouterHeightPct)
+		// splitView renders renderPanelTitle once above Router and once above
+		// Validator in the left column, each consuming one row. Subtract them
+		// before distributing viewport heights so the left column's total
+		// height equals contentH and doesn't overflow the terminal.
+		const panelTitleRows = 2
+		routerH := int(float64(contentH-panelTitleRows) * theme.SplitRouterHeightPct)
 		if routerH < 1 {
 			routerH = 1
 		}
-		validatorH := contentH - routerH
+		validatorH := contentH - panelTitleRows - routerH
 		if validatorH < 1 {
 			validatorH = 1
 		}
