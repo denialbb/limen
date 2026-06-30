@@ -86,6 +86,10 @@ func (g *dummyGitClient) ProvisionWorktree(ctx context.Context, baseCommit, bran
 	return g.manager.ProvisionWorktree(ctx, baseCommit, branchName, path)
 }
 
+func (g *dummyGitClient) ProvisionThrowawayWorktree(ctx context.Context, patch string) (*git.Worktree, error) {
+	return g.manager.ProvisionThrowawayWorktree(ctx, patch)
+}
+
 func (g *dummyGitClient) CommitWorktree(ctx context.Context, taskID string, wt *git.Worktree) error {
 	return g.manager.CommitWorktree(ctx, taskID, wt)
 }
@@ -526,5 +530,72 @@ func TestSubmitVerdict(t *testing.T) {
 	}
 	if !decisions[0].Pass || decisions[0].Feedback != "Looks great" {
 		t.Errorf("Unexpected validation decision values: %+v", decisions[0])
+	}
+}
+
+type debrisValidator struct {
+	passes bool
+}
+
+func (v *debrisValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree, em orchestrator.Emitter) (bool, string, error) {
+	// Write test debris to the validator's worktree.
+	err := os.WriteFile(filepath.Join(wt.Path, "debris.txt"), []byte("this is test debris"), 0644)
+	if err != nil {
+		return false, "failed to write debris", err
+	}
+	return v.passes, "debris created", nil
+}
+
+func TestValidatorThrowawayWorktree(t *testing.T) {
+	store, err := state.NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	repoDir := setupTestRepo(t)
+	manager := git.NewWorktreeManager(repoDir, "main")
+	router := &dummyRouter{}
+	retriever := &dummyRetriever{}
+	worker := &dummyWorker{} // This creates solution.txt
+	validator := &debrisValidator{passes: true}
+	gitClient := &dummyGitClient{manager: manager}
+
+	worktreeRoot := t.TempDir()
+	b := bus.NewChannelBus()
+	defer b.Close()
+	orch := orchestrator.NewOrchestrator(store, b, router, retriever, worker, validator, gitClient, worktreeRoot)
+
+	taskID := "task-debris"
+	_, err = store.CreateTask(taskID, 3)
+	if err != nil {
+		t.Fatalf("Failed to create task: %v", err)
+	}
+
+	err = orch.RunTask(context.Background(), taskID)
+	if err != nil {
+		t.Fatalf("Orchestrator run failed: %v", err)
+	}
+
+	task, err := store.GetTask(taskID)
+	if err != nil {
+		t.Fatalf("Failed to get task: %v", err)
+	}
+
+	if task.CurrentState != state.StateCommitted {
+		t.Errorf("Expected state COMMITTED, got %s", task.CurrentState)
+	}
+
+	// Check that solution.txt is in the commit, but debris.txt is not.
+	showCmd := exec.Command("git", "show", "main:solution.txt")
+	showCmd.Dir = repoDir
+	if err := showCmd.Run(); err != nil {
+		t.Errorf("Expected solution.txt to be committed: %v", err)
+	}
+
+	showCmd = exec.Command("git", "show", "main:debris.txt")
+	showCmd.Dir = repoDir
+	if err := showCmd.Run(); err == nil {
+		t.Error("Expected debris.txt NOT to be committed, but it was found")
 	}
 }
