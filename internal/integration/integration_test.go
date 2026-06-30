@@ -442,3 +442,89 @@ func getHeadCommit(t *testing.T, repoDir string) string {
 	}
 	return string(out)
 }
+
+func TestSubmitVerdict(t *testing.T) {
+	binaryPath := buildLimenBinary(t)
+	
+	dbDir := t.TempDir()
+	dbPath := filepath.Join(dbDir, "limen.db")
+	
+	store, err := state.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to open store: %v", err)
+	}
+	defer store.Close()
+	
+	taskID := "test-submit-verdict-task"
+	_, err = store.CreateTask(taskID, 3)
+	if err != nil {
+		t.Fatalf("Failed to create task: %v", err)
+	}
+	
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// 1. Run ready-for-review in background
+	readyCmd := exec.CommandContext(ctx, binaryPath, "ready-for-review",
+		"--task-id", taskID,
+		"--db-path", dbPath,
+		"--summary", "I did the work",
+	)
+	
+	// Capture stdout
+	var readyOut strings.Builder
+	readyCmd.Stdout = &readyOut
+	
+	if err := readyCmd.Start(); err != nil {
+		t.Fatalf("Failed to start ready-for-review: %v", err)
+	}
+	
+	// Wait a bit to ensure ready-for-review has written the pending callback
+	time.Sleep(500 * time.Millisecond)
+	
+	// 2. Run submit-verdict
+	submitCmd := exec.Command(binaryPath, "submit-verdict",
+		"--task-id", taskID,
+		"--db-path", dbPath,
+		"--passes=true",
+		"--feedback", "Looks great",
+	)
+	
+	submitOut, err := submitCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("submit-verdict failed: %v\nOutput: %s", err, string(submitOut))
+	}
+	
+	// 3. Wait for ready-for-review to finish
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- readyCmd.Wait()
+	}()
+	
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("ready-for-review failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("ready-for-review timed out waiting for verdict")
+	}
+	
+	// 4. Verify output
+	outputStr := strings.TrimSpace(readyOut.String())
+	if !strings.Contains(outputStr, `"passes":true`) || !strings.Contains(outputStr, `"feedback":"Looks great"`) {
+		t.Errorf("Expected output to contain verdict JSON, got: %s", outputStr)
+	}
+	
+	// 5. Verify database records
+	decisions, err := store.GetValidationDecisions(taskID)
+	if err != nil {
+		t.Fatalf("Failed to get validation decisions: %v", err)
+	}
+	if len(decisions) != 1 {
+		t.Fatalf("Expected 1 validation decision, got %d", len(decisions))
+	}
+	if !decisions[0].Pass || decisions[0].Feedback != "Looks great" {
+		t.Errorf("Unexpected validation decision values: %+v", decisions[0])
+	}
+}
