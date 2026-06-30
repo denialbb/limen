@@ -205,6 +205,10 @@ func (m *mockGit) ProvisionWorktree(ctx context.Context, baseCommit, branchName,
 	return &git.Worktree{Path: path, Branch: branchName, BaseCommit: baseCommit}, nil
 }
 
+func (m *mockGit) ProvisionThrowawayWorktree(ctx context.Context, patch string) (*git.Worktree, error) {
+	return &git.Worktree{Path: "/tmp/mock-throwaway", Branch: "", BaseCommit: "mock-base"}, nil
+}
+
 func (m *mockGit) CommitWorktree(ctx context.Context, taskID string, wt *git.Worktree) error {
 	return nil
 }
@@ -545,6 +549,9 @@ func (m *mockGitBase) IsValid(ctx context.Context) (bool, error) {
 }
 func (m *mockGitBase) ProvisionWorktree(ctx context.Context, baseCommit, branchName, path string) (*git.Worktree, error) {
 	return &git.Worktree{Path: path, Branch: branchName, BaseCommit: baseCommit}, nil
+}
+func (m *mockGitBase) ProvisionThrowawayWorktree(ctx context.Context, patch string) (*git.Worktree, error) {
+	return &git.Worktree{Path: "/tmp/mock-throwaway", Branch: "", BaseCommit: "mock-base"}, nil
 }
 func (m *mockGitBase) CommitWorktree(ctx context.Context, taskID string, wt *git.Worktree) error {
 	return nil

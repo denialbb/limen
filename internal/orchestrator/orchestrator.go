@@ -80,6 +80,8 @@ type GitClient interface {
 	DestroyWorktree(ctx context.Context, wt *git.Worktree) error
 	// GetWorktreeDiff returns the worker's uncommitted changes relative to HEAD.
 	GetWorktreeDiff(ctx context.Context, wt *git.Worktree) (string, error)
+	// ProvisionThrowawayWorktree creates a detached worktree with the given patch applied.
+	ProvisionThrowawayWorktree(ctx context.Context, patch string) (*git.Worktree, error)
 }
 
 // Orchestrator defines the main contract for running the Limen Go Core Loop.
@@ -359,8 +361,22 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 			return err
 		}
 
+		diff, err := o.git.GetWorktreeDiff(ctx, wt)
+		if err != nil {
+			return err
+		}
+
+		tempWt, err := o.git.ProvisionThrowawayWorktree(ctx, diff)
+		if err != nil {
+			return err
+		}
+
 		o.recordToolCall(task.ID, "validator.Evaluate", "", "")
-		passes, validationFeedback, err := o.validator.Evaluate(ctx, task, wt, em)
+		passes, validationFeedback, err := o.validator.Evaluate(ctx, task, tempWt, em)
+		
+		// Destroy throwaway worktree after evaluation
+		_ = o.git.DestroyWorktree(context.WithoutCancel(ctx), tempWt)
+
 		if err != nil {
 			return err
 		}

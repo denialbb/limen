@@ -156,6 +156,9 @@ func (m *mockGit) IsValid(ctx context.Context) (bool, error) { return true, nil 
 func (m *mockGit) ProvisionWorktree(ctx context.Context, baseCommit, branchName, path string) (*git.Worktree, error) {
 	return &git.Worktree{Path: path}, nil
 }
+func (m *mockGit) ProvisionThrowawayWorktree(ctx context.Context, patch string) (*git.Worktree, error) {
+	return &git.Worktree{Path: "/tmp/mock-throwaway"}, nil
+}
 func (m *mockGit) CommitWorktree(ctx context.Context, taskID string, wt *git.Worktree) error { return nil }
 func (m *mockGit) CheckForConflicts(ctx context.Context, wt *git.Worktree) (bool, error)      { return false, nil }
 func (m *mockGit) ExtractConflictRegions(ctx context.Context, wt *git.Worktree) ([]git.ConflictRegion, error) {

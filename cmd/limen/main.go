@@ -175,6 +175,9 @@ func (c *cliGit) IsValid(ctx context.Context) (bool, error) {
 func (c *cliGit) ProvisionWorktree(ctx context.Context, baseCommit, branchName, path string) (*git.Worktree, error) {
 	return c.manager.ProvisionWorktree(ctx, baseCommit, branchName, path)
 }
+func (c *cliGit) ProvisionThrowawayWorktree(ctx context.Context, patch string) (*git.Worktree, error) {
+	return c.manager.ProvisionThrowawayWorktree(ctx, patch)
+}
 func (c *cliGit) CommitWorktree(ctx context.Context, taskID string, wt *git.Worktree) error {
 	return c.manager.CommitWorktree(ctx, taskID, wt)
 }
