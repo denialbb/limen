@@ -83,6 +83,7 @@ echo '{"type":"agent_end"}'
 
 	cmdRun := exec.CommandContext(ctx, binaryPath, "run-task",
 		"--task-id", taskID,
+		"--prompt", "test prompt",
 		"--db-path", dbPath,
 		"--repo-path", repoDir,
 		"--mock=false",

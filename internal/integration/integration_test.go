@@ -312,6 +312,7 @@ func TestEndToEndWithRealBinary(t *testing.T) {
 
 	cmd := exec.CommandContext(ctx, binaryPath, "run-task",
 		"--task-id", "spike-demo",
+		"--prompt", "test prompt",
 		"--db-path", dbPath,
 		"--repo-path", repoDir,
 		"--mock",

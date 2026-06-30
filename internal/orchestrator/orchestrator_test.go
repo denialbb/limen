@@ -32,11 +32,11 @@ type mockStore struct {
 	tasks map[string]*state.Task
 }
 
-func (m *mockStore) CreateTask(id string, maxRetries int) (*state.Task, error) {
+func (m *mockStore) CreateTask(id string, maxRetries int, prompt string) (*state.Task, error) {
 	if _, exists := m.tasks[id]; exists {
 		return nil, state.ErrTaskAlreadyExists
 	}
-	t := &state.Task{ID: id, CurrentState: state.StateCreated, MaxRetries: maxRetries}
+	t := &state.Task{ID: id, CurrentState: state.StateCreated, MaxRetries: maxRetries, Prompt: prompt}
 	m.tasks[id] = t
 	return t, nil
 }

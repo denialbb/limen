@@ -71,7 +71,7 @@ type subprocess struct {
 
 // newSubprocess starts cmd, attaches encoder (to stdin) / decoder (from stdout),
 // and launches a background goroutine that watches ctx.Done().
-func newSubprocess(ctx context.Context, cmd *exec.Cmd, timeout time.Duration) (*subprocess, error) {
+func newSubprocess(ctx context.Context, cmd *exec.Cmd, timeout time.Duration, logFile *os.File) (*subprocess, error) {
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("remote: stdin pipe: %w", err)
@@ -82,7 +82,11 @@ func newSubprocess(ctx context.Context, cmd *exec.Cmd, timeout time.Duration) (*
 	}
 	// Capture stderr for diagnostics; the subprocess should not write to
 	// stderr except for unexpected crashes.
-	cmd.Stderr = os.Stderr
+	if logFile != nil {
+		cmd.Stderr = logFile
+	} else {
+		cmd.Stderr = os.Stderr
+	}
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("remote: start subprocess: %w", err)
@@ -153,6 +157,7 @@ type Option func(*options)
 
 type options struct {
 	shutdownTimeout time.Duration
+	logDir          string
 }
 
 func defaultOptions() *options {
@@ -166,6 +171,13 @@ func defaultOptions() *options {
 func WithShutdownTimeout(d time.Duration) Option {
 	return func(o *options) {
 		o.shutdownTimeout = d
+	}
+}
+
+// WithLogDir sets the directory where subprocess logs should be saved.
+func WithLogDir(dir string) Option {
+	return func(o *options) {
+		o.logDir = dir
 	}
 }
 
@@ -195,7 +207,7 @@ func (r *ndjsonRouter) Evaluate(ctx context.Context, task *state.Task, em orches
 		Attempt: 1,
 	}
 
-	result, err := r.invoke(ctx, req)
+	result, err := r.invoke(ctx, req, task.ID)
 	if err != nil {
 		return "", err
 	}
@@ -231,9 +243,19 @@ func (r *ndjsonRouter) Evaluate(ctx context.Context, task *state.Task, em orches
 
 // invoke launches the subprocess, sends the request envelope, reads
 // exactly one result event, and returns the decoded payload.
-func (r *ndjsonRouter) invoke(ctx context.Context, req requestEnvelope) (map[string]any, error) {
+func (r *ndjsonRouter) invoke(ctx context.Context, req requestEnvelope, taskID string) (map[string]any, error) {
 	cmd := exec.Command(r.cmdArgs[0], r.cmdArgs[1:]...)
-	sp, err := newSubprocess(ctx, cmd, r.opts.shutdownTimeout)
+	var logFile *os.File
+	if r.opts.logDir != "" {
+		logPath := filepath.Join(r.opts.logDir, fmt.Sprintf("%s-router.log", taskID))
+		if err := os.MkdirAll(r.opts.logDir, 0755); err == nil {
+			if f, errOpen := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); errOpen == nil {
+				logFile = f
+				defer logFile.Close()
+			}
+		}
+	}
+	sp, err := newSubprocess(ctx, cmd, r.opts.shutdownTimeout, logFile)
 	if err != nil {
 		return nil, err
 	}
@@ -276,7 +298,17 @@ func (w *ndjsonWorker) ProduceSolution(ctx context.Context, task *state.Task, wt
 	}
 
 	cmd := exec.Command(w.cmdArgs[0], w.cmdArgs[1:]...)
-	sp, err := newSubprocess(ctx, cmd, w.opts.shutdownTimeout)
+	var logFile *os.File
+	if w.opts.logDir != "" {
+		logPath := filepath.Join(w.opts.logDir, fmt.Sprintf("%s-worker.log", task.ID))
+		if err := os.MkdirAll(w.opts.logDir, 0755); err == nil {
+			if f, errOpen := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); errOpen == nil {
+				logFile = f
+				defer logFile.Close()
+			}
+		}
+	}
+	sp, err := newSubprocess(ctx, cmd, w.opts.shutdownTimeout, logFile)
 	if err != nil {
 		return err
 	}
@@ -432,7 +464,17 @@ func (v *ndjsonValidator) Evaluate(ctx context.Context, task *state.Task, wt *gi
 	}
 
 	cmd := exec.Command(v.cmdArgs[0], v.cmdArgs[1:]...)
-	sp, err := newSubprocess(ctx, cmd, v.opts.shutdownTimeout)
+	var logFile *os.File
+	if v.opts.logDir != "" {
+		logPath := filepath.Join(v.opts.logDir, fmt.Sprintf("%s-validator.log", task.ID))
+		if err := os.MkdirAll(v.opts.logDir, 0755); err == nil {
+			if f, errOpen := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); errOpen == nil {
+				logFile = f
+				defer logFile.Close()
+			}
+		}
+	}
+	sp, err := newSubprocess(ctx, cmd, v.opts.shutdownTimeout, logFile)
 	if err != nil {
 		return false, "", err
 	}

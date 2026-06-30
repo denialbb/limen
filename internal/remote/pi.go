@@ -8,7 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"strings"
+	"path/filepath"
 	"time"
 
 	"github.com/denialbb/limen/internal/bus"
@@ -41,7 +41,23 @@ func (w *piWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *gi
 	if err != nil {
 		return fmt.Errorf("piworker: stdout pipe: %w", err)
 	}
-	cmd.Stderr = os.Stderr
+	var logFile *os.File
+	if w.opts.logDir != "" {
+		logPath := filepath.Join(w.opts.logDir, fmt.Sprintf("%s-worker.log", task.ID))
+		if err := os.MkdirAll(w.opts.logDir, 0755); err == nil {
+			logFile, err = os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+			if err == nil {
+				defer logFile.Close()
+				cmd.Stderr = logFile
+			} else {
+				cmd.Stderr = os.Stderr
+			}
+		} else {
+			cmd.Stderr = os.Stderr
+		}
+	} else {
+		cmd.Stderr = os.Stderr
+	}
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("piworker: start: %w", err)
@@ -55,7 +71,9 @@ func (w *piWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *gi
 	}
 
 	// Construct the prompt
-	promptText := fmt.Sprintf("Task ID: %s\n\nTask: %s\n\nWhen you are finished, you MUST run the command `limen ready-for-review --task-id %s --summary \"<summary>\"`. Wait for the verdict. If it says approved, you can finish. If it says rejected with feedback, you must revise your work and then call ready-for-review again.", task.ID, task.Prompt, task.ID)
+	repoRoot := filepath.Dir(filepath.Dir(filepath.Dir(wt.Path)))
+	dbPath := filepath.Join(repoRoot, "limen.db")
+	promptText := fmt.Sprintf("Task ID: %s\n\nTask: %s\n\nWhen you are finished, you MUST run the command `limen ready-for-review --task-id %s --summary \"<summary>\" --db-path %s`. Wait for the verdict. If it says approved, you can finish. If it says rejected with feedback, you must revise your work and then call ready-for-review again.", task.ID, task.Prompt, task.ID, dbPath)
 	if feedback != "" {
 		promptText += fmt.Sprintf("\n\nPrevious feedback:\n%s", feedback)
 	}
@@ -81,6 +99,9 @@ func (w *piWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *gi
 			continue
 		}
 
+		// TEMPORARY DEBUG: write raw pi lines to a file so we can inspect them
+		// (Removed temporary debug logging)
+
 		msgType, _ := msg["type"].(string)
 
 		if msgType == "agent_end" {
@@ -89,12 +110,27 @@ func (w *piWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *gi
 
 		if em != nil {
 			// Skip reasoning messages (message_update); only publish tool executions
-			if strings.HasPrefix(msgType, "tool_execution_") {
-				toolName, _ := msg["tool"].(string)
+			if msgType == "tool_execution_start" {
+				toolName, _ := msg["toolName"].(string)
+				if toolName == "" {
+					toolName, _ = msg["tool"].(string)
+				}
+				
+				var argsStr string
+				if args, ok := msg["args"]; ok {
+					b, _ := json.Marshal(args)
+					argsStr = string(b)
+				} else if args, ok := msg["arguments"]; ok {
+					b, _ := json.Marshal(args)
+					argsStr = string(b)
+				} else {
+					argsStr = line
+				}
+
 				em.Publish(&bus.WorkerToolCall{
 					TaskID:    task.ID,
 					Tool:      toolName,
-					Args:      line,
+					Args:      argsStr,
 					Timestamp: time.Now(),
 				})
 			}

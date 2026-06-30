@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -110,7 +111,8 @@ func (c *cliWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *g
 // cliValidator is a placeholder validator that always passes.
 // TODO: Replace with the real L3 validator.
 type cliValidator struct {
-	cmd string
+	cmd    string
+	logDir string
 }
 
 func (v *cliValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree, em orchestrator.Emitter) (bool, string, error) {
@@ -123,13 +125,35 @@ func (v *cliValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.W
 		cmdParts := strings.Fields(v.cmd)
 		c := exec.CommandContext(ctx, cmdParts[0], cmdParts[1:]...)
 		c.Dir = wt.Path
-		out, err := c.CombinedOutput()
+
+		var outBuf strings.Builder
+		var logFile *os.File
+		var err error
+
+		if v.logDir != "" {
+			logPath := filepath.Join(v.logDir, fmt.Sprintf("%s-validator.log", task.ID))
+			if err := os.MkdirAll(v.logDir, 0755); err == nil {
+				logFile, err = os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+			}
+		}
+
+		if logFile != nil {
+			defer logFile.Close()
+			c.Stdout = io.MultiWriter(&outBuf, logFile)
+			c.Stderr = io.MultiWriter(&outBuf, logFile)
+		} else {
+			c.Stdout = &outBuf
+			c.Stderr = &outBuf
+		}
+
+		err = c.Run()
+		out := outBuf.String()
 		if err != nil {
 			passes = false
-			feedback = fmt.Sprintf("Command %q failed:\n%s\nError: %v", v.cmd, string(out), err)
+			feedback = fmt.Sprintf("Command %q failed:\n%s\nError: %v", v.cmd, out, err)
 		} else {
 			passes = true
-			feedback = fmt.Sprintf("Command %q passed:\n%s", v.cmd, string(out))
+			feedback = fmt.Sprintf("Command %q passed:\n%s", v.cmd, out)
 		}
 	}
 
@@ -172,7 +196,7 @@ func (c *cliGit) IsValid(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("not a git repository: %w, output: %s", err, string(out))
 	}
 
-	cmdStatus := exec.CommandContext(ctx, "git", "status", "--porcelain")
+	cmdStatus := exec.CommandContext(ctx, "git", "status", "--porcelain", "--untracked-files=no")
 	cmdStatus.Dir = c.repoPath
 	out, err := cmdStatus.Output()
 	if err != nil {
@@ -271,7 +295,7 @@ func runTUICmd() {
 	tuiFlags := flag.NewFlagSet("tui", flag.ExitOnError)
 	taskID := tuiFlags.String("task-id", "", "The ID of the task to run")
 	prompt := tuiFlags.String("prompt", "", "The initial prompt for the task")
-	dbPath := tuiFlags.String("db-path", "limen.db", "Path to the SQLite database")
+	dbPath := tuiFlags.String("db-path", "", "Path to the SQLite database (default: <repo-path>/limen.db)")
 	repoPath := tuiFlags.String("repo-path", ".", "Path to the target git repository")
 	mockFlag := tuiFlags.Bool("mock", true, "Use Python mock backend for cognitive components")
 	mockTranscript := tuiFlags.String("mock-transcript", "src/limen/mock/transcripts/spike.json", "Path to the mock transcript JSON file")
@@ -293,6 +317,10 @@ func runTUICmd() {
 		fmt.Fprintf(os.Stderr, "--prompt is required\n")
 		tuiFlags.Usage()
 		os.Exit(1)
+	}
+
+	if *dbPath == "" {
+		*dbPath = filepath.Join(*repoPath, "limen.db")
 	}
 
 	if !isTTY(os.Stdout.Fd()) {
@@ -343,24 +371,26 @@ func runTaskInteractive(taskID, prompt, dbPath, repoPath string, mock bool, mock
 
 	gitClient = &cliGit{manager: manager, repoPath: repoPath}
 
+	logDir := filepath.Join(repoPath, ".limen", "logs")
+
 	if mock {
 		// NOTE: Wire Python mock backend adapters. Each adapter launches a
 		// single-shot `python -m limen.mock.<role>` subprocess per call and
 		// passes the transcript path as argv[1] so the mock runtime replays
 		// canned entries from the transcript file.
-		router = remote.NewRouter([]string{"python", "-m", "limen.mock.router", mockTranscript})
+		router = remote.NewRouter([]string{"python", "-m", "limen.mock.router", mockTranscript}, remote.WithLogDir(logDir))
 		retriever = &cliRetriever{}
-		worker = remote.NewWorker([]string{"python", "-m", "limen.mock.worker", mockTranscript})
-		validator = remote.NewValidator([]string{"python", "-m", "limen.mock.validator", mockTranscript}, gitClient)
+		worker = remote.NewWorker([]string{"python", "-m", "limen.mock.worker", mockTranscript}, remote.WithLogDir(logDir))
+		validator = remote.NewValidator([]string{"python", "-m", "limen.mock.validator", mockTranscript}, gitClient, remote.WithLogDir(logDir))
 	} else {
 		router = &cliRouter{}
 		retriever = &cliRetriever{}
 		if workerBackend == "pi" {
-			worker = remote.NewPiWorker()
+			worker = remote.NewPiWorker(remote.WithLogDir(logDir))
 		} else {
 			worker = &cliWorker{}
 		}
-		validator = &cliValidator{cmd: validatorCmd}
+		validator = &cliValidator{cmd: validatorCmd, logDir: logDir}
 	}
 
 	orch := orchestrator.NewOrchestrator(
@@ -461,20 +491,22 @@ func runTaskWithConfig(taskID, prompt, dbPath, repoPath string, mock bool, mockT
 
 	gitClient = &cliGit{manager: manager, repoPath: repoPath}
 
+	logDir := filepath.Join(repoPath, ".limen", "logs")
+
 	if mock {
-		router = remote.NewRouter([]string{"python", "-m", "limen.mock.router", mockTranscript})
+		router = remote.NewRouter([]string{"python", "-m", "limen.mock.router", mockTranscript}, remote.WithLogDir(logDir))
 		retriever = &cliRetriever{}
-		worker = remote.NewWorker([]string{"python", "-m", "limen.mock.worker", mockTranscript})
-		validator = remote.NewValidator([]string{"python", "-m", "limen.mock.validator", mockTranscript}, gitClient)
+		worker = remote.NewWorker([]string{"python", "-m", "limen.mock.worker", mockTranscript}, remote.WithLogDir(logDir))
+		validator = remote.NewValidator([]string{"python", "-m", "limen.mock.validator", mockTranscript}, gitClient, remote.WithLogDir(logDir))
 	} else {
 		router = &cliRouter{}
 		retriever = &cliRetriever{}
 		if workerBackend == "pi" {
-			worker = remote.NewPiWorker()
+			worker = remote.NewPiWorker(remote.WithLogDir(logDir))
 		} else {
 			worker = &cliWorker{}
 		}
-		validator = &cliValidator{cmd: validatorCmd}
+		validator = &cliValidator{cmd: validatorCmd, logDir: logDir}
 	}
 
 	orch := orchestrator.NewOrchestrator(
@@ -517,7 +549,7 @@ func runTaskCmd() {
 	runTaskFlags := flag.NewFlagSet("run-task", flag.ExitOnError)
 	taskID := runTaskFlags.String("task-id", "", "The ID of the task to run")
 	prompt := runTaskFlags.String("prompt", "", "The initial prompt for the task")
-	dbPath := runTaskFlags.String("db-path", "limen.db", "Path to the SQLite database")
+	dbPath := runTaskFlags.String("db-path", "", "Path to the SQLite database (default: <repo-path>/limen.db)")
 	repoPath := runTaskFlags.String("repo-path", ".", "Path to the target git repository")
 	mockFlag := runTaskFlags.Bool("mock", true, "Use Python mock backend for cognitive components")
 	mockTranscript := runTaskFlags.String("mock-transcript", "src/limen/mock/transcripts/spike.json", "Path to the mock transcript JSON file")
@@ -539,6 +571,10 @@ func runTaskCmd() {
 		fmt.Fprintf(os.Stderr, "--prompt is required\n")
 		runTaskFlags.Usage()
 		os.Exit(1)
+	}
+
+	if *dbPath == "" {
+		*dbPath = filepath.Join(*repoPath, "limen.db")
 	}
 
 	runTaskWithConfig(*taskID, *prompt, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend, *validatorCmd)

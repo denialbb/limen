@@ -63,7 +63,7 @@ func (w WorkerTab) handleEvent(ev bus.Event) WorkerTab {
 		)
 		appendLine(&w.lines, &w.viewport, w.viewport.Width, e.Timestamp, body)
 	case *bus.WorkerToolCall:
-		appendLine(&w.lines, &w.viewport, w.viewport.Width, e.Timestamp, "Tool call: "+e.Tool)
+		appendLine(&w.lines, &w.viewport, w.viewport.Width, e.Timestamp, "Tool call: "+e.Tool+" "+e.Args)
 	case *bus.WorkerFileEdit:
 		body := fmt.Sprintf("File edit: %s (%s)", e.Path, e.Op)
 		appendLine(&w.lines, &w.viewport, w.viewport.Width, e.Timestamp, body)
