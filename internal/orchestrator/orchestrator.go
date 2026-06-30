@@ -330,17 +330,87 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 					if err := o.transitionAndEmit(task.ID, state.StateAwaitingValidation, em); err != nil {
 						return err
 					}
-					// Mock a verdict into the DB per spike requirements
-					_ = o.store.WriteCallbackVerdict(cbID, "mocked verdict")
 					
-					// Worker is still running, transition back via REVISION_REQUESTED
-					if err := o.transitionAndEmit(task.ID, state.StateRevisionRequested, em); err != nil {
+					diff, err := o.git.GetWorktreeDiff(ctx, wt)
+					if err != nil {
 						return err
 					}
-					// We must increment retry to satisfy state invariants
-					_ = o.store.IncrementRetry(task.ID)
-					if err := o.transitionAndEmit(task.ID, state.StateWorkerRunning, em); err != nil {
+
+					tempWt, err := o.git.ProvisionThrowawayWorktree(ctx, diff)
+					if err != nil {
 						return err
+					}
+
+					o.recordToolCall(task.ID, "validator.Evaluate", "", "")
+					passes, validationFeedback, err := o.validator.Evaluate(ctx, task, tempWt, em)
+					
+					_ = o.git.DestroyWorktree(context.WithoutCancel(ctx), tempWt)
+					if err != nil {
+						return err
+					}
+
+					if passes {
+						hasConflicts, err := o.git.CheckForConflicts(ctx, wt)
+						if err != nil {
+							return err
+						}
+						if hasConflicts {
+							passes = false
+							regions, extractErr := o.git.ExtractConflictRegions(ctx, wt)
+							if extractErr != nil {
+								em.Publish(&bus.ConflictDetected{
+									TaskID:    task.ID,
+									Regions:   nil,
+									Timestamp: time.Now(),
+								})
+								return extractErr
+							}
+							em.Publish(&bus.ConflictDetected{
+								TaskID:    task.ID,
+								Regions:   regions,
+								Timestamp: time.Now(),
+							})
+							validationFeedback = fmt.Sprintf("Conflicts detected: %+v", regions)
+						}
+					}
+
+					if err := o.store.RecordValidationDecision(task.ID, passes, validationFeedback); err != nil {
+						return err
+					}
+
+					verdictStr := fmt.Sprintf(`{"passes":%t,"feedback":%q}`, passes, validationFeedback)
+					_ = o.store.WriteCallbackVerdict(cbID, verdictStr)
+					
+					if passes {
+						if err := o.transitionAndEmit(task.ID, state.StateApproved, em); err != nil {
+							return err
+						}
+					} else {
+						task, err = o.store.GetTask(task.ID)
+						if err != nil {
+							return err
+						}
+						if task.RetryCount >= task.MaxRetries {
+							if err := o.finalizeAndEmit(task.ID, state.StateFailedEscalated, "", em); err != nil {
+								return err
+							}
+							return errors.New("validation failed and max retries reached")
+						}
+
+						if err := o.transitionAndEmit(task.ID, state.StateRevisionRequested, em); err != nil {
+							return err
+						}
+						if err := o.store.IncrementRetry(task.ID); err != nil {
+							return err
+						}
+						task, err = o.store.GetTask(task.ID)
+						if err != nil {
+							return err
+						}
+						feedback = validationFeedback
+						if err := o.transitionAndEmit(task.ID, state.StateWorkerRunning, em); err != nil {
+							return err
+						}
 					}
 				}
 			}
@@ -356,7 +426,40 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 		default:
 		}
 
-		// Since we transitioned back to WORKER_RUNNING, we can safely transition to AWAITING_VALIDATION
+		current, err := o.store.GetTask(task.ID)
+		if err != nil {
+			return err
+		}
+
+		if current.CurrentState == state.StateApproved {
+			// NOTE: The workerLoop already transitioned to APPROVED via
+			// the callback path. Just commit and finalize.
+			finalOutput, err := o.git.GetWorktreeDiff(ctx, wt)
+			if err != nil {
+				return err
+			}
+
+			if err := o.git.CommitWorktree(ctx, task.ID, wt); err != nil {
+				return err
+			}
+
+			if err := o.finalizeAndEmit(task.ID, state.StateCommitted, finalOutput, em); err != nil {
+				return err
+			}
+			return nil
+		}
+
+		if current.CurrentState != state.StateWorkerRunning {
+			// Unexpected terminal or intermediate state -- escalate.
+			if err := o.finalizeAndEmit(task.ID, state.StateFailedEscalated, "", em); err != nil {
+				return err
+			}
+			return errors.New("worker exited without submitting for review")
+		}
+
+		// Synchronous validation path: worker returned without registering
+		// a callback (e.g. mock/synchronous workers from issues 007-012).
+		// Transition through the validation states inline.
 		if err := o.transitionAndEmit(task.ID, state.StateAwaitingValidation, em); err != nil {
 			return err
 		}
@@ -372,25 +475,11 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 		}
 
 		o.recordToolCall(task.ID, "validator.Evaluate", "", "")
-		passes, validationFeedback, err := o.validator.Evaluate(ctx, task, tempWt, em)
-		
-		// Destroy throwaway worktree after evaluation
+		passes, validationFeedback, vErr := o.validator.Evaluate(ctx, task, tempWt, em)
+
 		_ = o.git.DestroyWorktree(context.WithoutCancel(ctx), tempWt)
-
-		if err != nil {
-			return err
-		}
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		feedback = validationFeedback
-
-		if err := o.store.RecordValidationDecision(task.ID, passes, feedback); err != nil {
-			return err
+		if vErr != nil {
+			return vErr
 		}
 
 		if passes {
@@ -399,11 +488,9 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 				return err
 			}
 			if hasConflicts {
+				passes = false
 				regions, extractErr := o.git.ExtractConflictRegions(ctx, wt)
 				if extractErr != nil {
-					// NOTE: A conflict was detected but region extraction
-					// failed. Emit ConflictDetected with an empty Regions
-					// slice so the TUI still sees the conflict signal.
 					em.Publish(&bus.ConflictDetected{
 						TaskID:    task.ID,
 						Regions:   nil,
@@ -411,47 +498,25 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 					})
 					return extractErr
 				}
-				// NOTE: Publish the conflict event immediately so the TUI can
-				// surface the conflict regions before the retry/escalation
-				// decision is made.
 				em.Publish(&bus.ConflictDetected{
 					TaskID:    task.ID,
 					Regions:   regions,
 					Timestamp: time.Now(),
 				})
-				feedback = fmt.Sprintf("Conflicts detected: %+v", regions)
-
-				task, err = o.store.GetTask(task.ID)
-				if err != nil {
-					return err
-				}
-				if task.RetryCount >= task.MaxRetries {
-					if err := o.finalizeAndEmit(task.ID, state.StateFailedEscalated, "", em); err != nil {
-						return err
-					}
-					return errors.New("worktree has conflicts and max retries reached")
-				}
-
-				if err := o.transitionAndEmit(task.ID, state.StateRevisionRequested, em); err != nil {
-					return err
-				}
-				if err := o.store.IncrementRetry(task.ID); err != nil {
-					return err
-				}
-				// NOTE: Refresh task so the next iteration's worker receives
-				// the authoritative RetryCount after the increment.
-				task, err = o.store.GetTask(task.ID)
-				if err != nil {
-					return err
-				}
-				continue
+				validationFeedback = fmt.Sprintf("Conflicts detected: %+v", regions)
 			}
+		}
 
+		if err := o.store.RecordValidationDecision(task.ID, passes, validationFeedback); err != nil {
+			return err
+		}
+
+		if passes {
 			// NODE: Perform git operations first while still in
-			// AWAITING_VALIDATION, then atomically transition to APPROVED and
-			// record the final output in a single transaction.  This eliminates
-			// the crash window between the state transition and the canonical
-			// output write (BUG #3).
+			// AWAITING_VALIDATION, then atomically transition to APPROVED
+			// and record the final output in a single transaction. This
+			// eliminates the crash window between the state transition and
+			// the canonical output write (BUG #3).
 			finalOutput, err := o.git.GetWorktreeDiff(ctx, wt)
 			if err != nil {
 				return err
@@ -461,33 +526,24 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 				return err
 			}
 
-			// Read authoritative from-state from the store.
-			current, err := o.store.GetTask(task.ID)
-			if err != nil {
-				return err
-			}
-			fromState := current.CurrentState
-
 			if err := o.store.TransitionAndRecordFinalOutput(task.ID, state.StateApproved, finalOutput); err != nil {
 				return err
 			}
 
 			em.Publish(&bus.TaskStateChanged{
-				From:      fromState,
+				From:      state.StateAwaitingValidation,
 				To:        state.StateApproved,
 				TaskID:    task.ID,
 				Timestamp: time.Now(),
 			})
 
-			// NOTE: Final transition to COMMITTED plus the finalize event are
-			// emitted together via finalizeAndEmit; the finalOutput is the diff
-			// reference surfaced to the TUI footer on completion.
 			if err := o.finalizeAndEmit(task.ID, state.StateCommitted, finalOutput, em); err != nil {
 				return err
 			}
 			return nil
 		}
 
+		// Validation failed -- check retry budget.
 		task, err = o.store.GetTask(task.ID)
 		if err != nil {
 			return err
@@ -511,5 +567,7 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 		if err != nil {
 			return err
 		}
+		feedback = validationFeedback
 	}
 }
+

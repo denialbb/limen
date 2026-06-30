@@ -109,10 +109,29 @@ func (c *cliWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *g
 
 // cliValidator is a placeholder validator that always passes.
 // TODO: Replace with the real L3 validator.
-type cliValidator struct{}
+type cliValidator struct {
+	cmd string
+}
 
 func (v *cliValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree, em orchestrator.Emitter) (bool, string, error) {
 	log.Printf("Validator evaluating solution for task %s", task.ID)
+
+	passes := true
+	feedback := "LGTM"
+
+	if v.cmd != "" {
+		cmdParts := strings.Fields(v.cmd)
+		c := exec.CommandContext(ctx, cmdParts[0], cmdParts[1:]...)
+		c.Dir = wt.Path
+		out, err := c.CombinedOutput()
+		if err != nil {
+			passes = false
+			feedback = fmt.Sprintf("Command %q failed:\n%s\nError: %v", v.cmd, string(out), err)
+		} else {
+			passes = true
+			feedback = fmt.Sprintf("Command %q passed:\n%s", v.cmd, string(out))
+		}
+	}
 
 	criteria := []string{"placeholder_criterion"}
 	// NOTE: Synthetic Validator taxonomy stream; the per-criterion result and
@@ -125,17 +144,17 @@ func (v *cliValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.W
 	em.Publish(&bus.ValidatorCriterionResult{
 		TaskID:    task.ID,
 		Criterion: "placeholder_criterion",
-		Passed:    true,
-		Detail:    "placeholder validator always passes",
+		Passed:    passes,
+		Detail:    feedback,
 		Timestamp: time.Now(),
 	})
 	em.Publish(&bus.ValidatorVerdict{
 		TaskID:    task.ID,
-		Passes:    true,
-		Feedback:  "LGTM",
+		Passes:    passes,
+		Feedback:  feedback,
 		Timestamp: time.Now(),
 	})
-	return true, "LGTM", nil
+	return passes, feedback, nil
 }
 
 // cliGit implements the orchestrator GitClient using the real WorktreeManager.
@@ -256,6 +275,7 @@ func runTUICmd() {
 	mockFlag := tuiFlags.Bool("mock", true, "Use Python mock backend for cognitive components")
 	mockTranscript := tuiFlags.String("mock-transcript", "src/limen/mock/transcripts/spike.json", "Path to the mock transcript JSON file")
 	workerBackend := tuiFlags.String("worker-backend", "pi", "Backend to use for the worker (pi, cli, mock)")
+	validatorCmd := tuiFlags.String("validator-cmd", "", "Command to run for cli validator")
 
 	if err := tuiFlags.Parse(os.Args[2:]); err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
@@ -271,11 +291,11 @@ func runTUICmd() {
 	if !isTTY(os.Stdout.Fd()) {
 		// NOTE: Non-interactive stdout. Fall back to the one-shot log style so
 		// pipes and CI get the same outcome reporting without ANSI pollution.
-		runTaskOneShot(*taskID, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend)
+		runTaskOneShot(*taskID, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend, *validatorCmd)
 		return
 	}
 
-	runTaskInteractive(*taskID, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend)
+	runTaskInteractive(*taskID, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend, *validatorCmd)
 }
 
 // isTTY reports whether the given file descriptor is an interactive terminal.
@@ -289,7 +309,7 @@ func isTTY(fd uintptr) bool {
 // Bubble Tea program in the foreground. After the program exits, a single
 // final-state line is printed so scripts that parse the trailing output still
 // get the outcome.
-func runTaskInteractive(taskID, dbPath, repoPath string, mock bool, mockTranscript string, workerBackend string) {
+func runTaskInteractive(taskID, dbPath, repoPath string, mock bool, mockTranscript string, workerBackend string, validatorCmd string) {
 	store, err := state.NewSQLiteStore(dbPath)
 	if err != nil {
 		log.Fatalf("Failed to initialize SQLite store: %v", err)
@@ -333,7 +353,7 @@ func runTaskInteractive(taskID, dbPath, repoPath string, mock bool, mockTranscri
 		} else {
 			worker = &cliWorker{}
 		}
-		validator = &cliValidator{}
+		validator = &cliValidator{cmd: validatorCmd}
 	}
 
 	orch := orchestrator.NewOrchestrator(
@@ -396,7 +416,7 @@ func runTaskInteractive(taskID, dbPath, repoPath string, mock bool, mockTranscri
 // creation, RunTask execution, and final state logging. Both the explicit
 // `run-task` subcommand and the non-TTY fallback from `runTUICmd` delegate here
 // to avoid duplicating the setup and teardown logic.
-func runTaskWithConfig(taskID, dbPath, repoPath string, mock bool, mockTranscript string, workerBackend string) {
+func runTaskWithConfig(taskID, dbPath, repoPath string, mock bool, mockTranscript string, workerBackend string, validatorCmd string) {
 	store, err := state.NewSQLiteStore(dbPath)
 	if err != nil {
 		log.Fatalf("Failed to initialize SQLite store: %v", err)
@@ -442,7 +462,7 @@ func runTaskWithConfig(taskID, dbPath, repoPath string, mock bool, mockTranscrip
 		} else {
 			worker = &cliWorker{}
 		}
-		validator = &cliValidator{}
+		validator = &cliValidator{cmd: validatorCmd}
 	}
 
 	orch := orchestrator.NewOrchestrator(
@@ -477,8 +497,8 @@ func runTaskWithConfig(taskID, dbPath, repoPath string, mock bool, mockTranscrip
 
 // runTaskOneShot is the non-TTY fallback. It reuses the run-task log-style
 // output and shares the same setup path as the explicit `run-task` subcommand.
-func runTaskOneShot(taskID, dbPath, repoPath string, mock bool, mockTranscript string, workerBackend string) {
-	runTaskWithConfig(taskID, dbPath, repoPath, mock, mockTranscript, workerBackend)
+func runTaskOneShot(taskID, dbPath, repoPath string, mock bool, mockTranscript string, workerBackend string, validatorCmd string) {
+	runTaskWithConfig(taskID, dbPath, repoPath, mock, mockTranscript, workerBackend, validatorCmd)
 }
 
 func runTaskCmd() {
@@ -489,6 +509,7 @@ func runTaskCmd() {
 	mockFlag := runTaskFlags.Bool("mock", true, "Use Python mock backend for cognitive components")
 	mockTranscript := runTaskFlags.String("mock-transcript", "src/limen/mock/transcripts/spike.json", "Path to the mock transcript JSON file")
 	workerBackend := runTaskFlags.String("worker-backend", "pi", "Backend to use for the worker (pi, cli, mock)")
+	validatorCmd := runTaskFlags.String("validator-cmd", "", "Command to run for cli validator")
 
 	if err := runTaskFlags.Parse(os.Args[2:]); err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
@@ -501,7 +522,7 @@ func runTaskCmd() {
 		os.Exit(1)
 	}
 
-	runTaskWithConfig(*taskID, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend)
+	runTaskWithConfig(*taskID, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend, *validatorCmd)
 }
 
 func runReadyForReviewCmd() {
