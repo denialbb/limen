@@ -249,6 +249,7 @@ func runTUICmd() {
 	repoPath := tuiFlags.String("repo-path", ".", "Path to the target git repository")
 	mockFlag := tuiFlags.Bool("mock", true, "Use Python mock backend for cognitive components")
 	mockTranscript := tuiFlags.String("mock-transcript", "src/limen/mock/transcripts/spike.json", "Path to the mock transcript JSON file")
+	workerBackend := tuiFlags.String("worker-backend", "pi", "Backend to use for the worker (pi, cli, mock)")
 
 	if err := tuiFlags.Parse(os.Args[2:]); err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
@@ -264,11 +265,11 @@ func runTUICmd() {
 	if !isTTY(os.Stdout.Fd()) {
 		// NOTE: Non-interactive stdout. Fall back to the one-shot log style so
 		// pipes and CI get the same outcome reporting without ANSI pollution.
-		runTaskOneShot(*taskID, *dbPath, *repoPath, *mockFlag, *mockTranscript)
+		runTaskOneShot(*taskID, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend)
 		return
 	}
 
-	runTaskInteractive(*taskID, *dbPath, *repoPath, *mockFlag, *mockTranscript)
+	runTaskInteractive(*taskID, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend)
 }
 
 // isTTY reports whether the given file descriptor is an interactive terminal.
@@ -282,7 +283,7 @@ func isTTY(fd uintptr) bool {
 // Bubble Tea program in the foreground. After the program exits, a single
 // final-state line is printed so scripts that parse the trailing output still
 // get the outcome.
-func runTaskInteractive(taskID, dbPath, repoPath string, mock bool, mockTranscript string) {
+func runTaskInteractive(taskID, dbPath, repoPath string, mock bool, mockTranscript string, workerBackend string) {
 	store, err := state.NewSQLiteStore(dbPath)
 	if err != nil {
 		log.Fatalf("Failed to initialize SQLite store: %v", err)
@@ -321,7 +322,11 @@ func runTaskInteractive(taskID, dbPath, repoPath string, mock bool, mockTranscri
 	} else {
 		router = &cliRouter{}
 		retriever = &cliRetriever{}
-		worker = &cliWorker{}
+		if workerBackend == "pi" {
+			worker = remote.NewPiWorker()
+		} else {
+			worker = &cliWorker{}
+		}
 		validator = &cliValidator{}
 	}
 
@@ -385,7 +390,7 @@ func runTaskInteractive(taskID, dbPath, repoPath string, mock bool, mockTranscri
 // creation, RunTask execution, and final state logging. Both the explicit
 // `run-task` subcommand and the non-TTY fallback from `runTUICmd` delegate here
 // to avoid duplicating the setup and teardown logic.
-func runTaskWithConfig(taskID, dbPath, repoPath string, mock bool, mockTranscript string) {
+func runTaskWithConfig(taskID, dbPath, repoPath string, mock bool, mockTranscript string, workerBackend string) {
 	store, err := state.NewSQLiteStore(dbPath)
 	if err != nil {
 		log.Fatalf("Failed to initialize SQLite store: %v", err)
@@ -426,7 +431,11 @@ func runTaskWithConfig(taskID, dbPath, repoPath string, mock bool, mockTranscrip
 	} else {
 		router = &cliRouter{}
 		retriever = &cliRetriever{}
-		worker = &cliWorker{}
+		if workerBackend == "pi" {
+			worker = remote.NewPiWorker()
+		} else {
+			worker = &cliWorker{}
+		}
 		validator = &cliValidator{}
 	}
 
@@ -462,8 +471,8 @@ func runTaskWithConfig(taskID, dbPath, repoPath string, mock bool, mockTranscrip
 
 // runTaskOneShot is the non-TTY fallback. It reuses the run-task log-style
 // output and shares the same setup path as the explicit `run-task` subcommand.
-func runTaskOneShot(taskID, dbPath, repoPath string, mock bool, mockTranscript string) {
-	runTaskWithConfig(taskID, dbPath, repoPath, mock, mockTranscript)
+func runTaskOneShot(taskID, dbPath, repoPath string, mock bool, mockTranscript string, workerBackend string) {
+	runTaskWithConfig(taskID, dbPath, repoPath, mock, mockTranscript, workerBackend)
 }
 
 func runTaskCmd() {
@@ -473,6 +482,7 @@ func runTaskCmd() {
 	repoPath := runTaskFlags.String("repo-path", ".", "Path to the target git repository")
 	mockFlag := runTaskFlags.Bool("mock", true, "Use Python mock backend for cognitive components")
 	mockTranscript := runTaskFlags.String("mock-transcript", "src/limen/mock/transcripts/spike.json", "Path to the mock transcript JSON file")
+	workerBackend := runTaskFlags.String("worker-backend", "pi", "Backend to use for the worker (pi, cli, mock)")
 
 	if err := runTaskFlags.Parse(os.Args[2:]); err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
@@ -485,7 +495,7 @@ func runTaskCmd() {
 		os.Exit(1)
 	}
 
-	runTaskWithConfig(*taskID, *dbPath, *repoPath, *mockFlag, *mockTranscript)
+	runTaskWithConfig(*taskID, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend)
 }
 
 func runReadyForReviewCmd() {
