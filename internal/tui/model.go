@@ -231,7 +231,8 @@ func (m Model) handleResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	headerH := 1
 	sepH := 1 + 2*theme.SeparatorPadV
 	tabstripH := 1
-	contentHeight := msg.Height - headerH - sepH - tabstripH
+	hintH := 1
+	contentHeight := msg.Height - headerH - sepH - tabstripH - hintH
 	if contentHeight < 1 {
 		contentHeight = 1
 	}
@@ -351,11 +352,16 @@ func (m Model) View() string {
 	}
 	sepLine := theme.SeparatorStyle().Render(strings.Repeat(theme.SeparatorRune, sepWidth))
 
+	hint := lipgloss.NewStyle().Faint(true).Foreground(lipgloss.Color("245")).Render(
+		"  [1-4] tab  [j/k] scroll  [q] quit",
+	)
+
 	blocks := []string{
 		m.header.View(),
 		sepLine,
 		m.activeTabView(),
 		m.tabStrip.View(),
+		hint,
 	}
 
 	if theme.SeparatorPadV > 0 {

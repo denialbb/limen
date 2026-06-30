@@ -202,16 +202,31 @@ func (r *ndjsonRouter) Evaluate(ctx context.Context, task *state.Task, em orches
 
 	decision, _ := result["decision"].(string)
 	// Map from transcript decision strings to orchestrator constants.
+	var orbDecision orchestrator.RouterDecision
 	switch decision {
 	case "proceed":
-		return orchestrator.DecisionProceed, nil
+		orbDecision = orchestrator.DecisionProceed
 	case "expand":
-		return orchestrator.DecisionExpand, nil
+		orbDecision = orchestrator.DecisionExpand
 	case "escalate":
-		return orchestrator.DecisionEscalate, nil
+		orbDecision = orchestrator.DecisionEscalate
 	default:
-		return orchestrator.DecisionProceed, nil
+		orbDecision = orchestrator.DecisionProceed
 	}
+
+	// Emit RouterDecisionEvent to the bus for TUI display.
+	if em != nil {
+		rationale, _ := result["rationale"].(string)
+		em.Publish(&bus.RouterDecisionEvent{
+			TaskID:      task.ID,
+			Decision:    bus.RouterDecision(orbDecision),
+			Rationale:   rationale,
+			ExpandCount: 0,
+			Timestamp:   time.Now(),
+		})
+	}
+
+	return orbDecision, nil
 }
 
 // invoke launches the subprocess, sends the request envelope, reads

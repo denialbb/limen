@@ -28,7 +28,7 @@ var (
 func setupTestRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	cmd := exec.Command("git", "init")
+	cmd := exec.Command("git", "init", "-b", "main")
 	cmd.Dir = dir
 	cmd.Run()
 	cmd = exec.Command("git", "config", "user.name", "Test User")
