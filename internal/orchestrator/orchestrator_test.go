@@ -3,7 +3,10 @@ package orchestrator_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -84,6 +87,22 @@ func (m *mockStore) RecordToolCall(id, call, args, response string) error {
 
 func (m *mockStore) GetToolCalls(id string) ([]state.ToolCall, error) {
 	return nil, nil
+}
+
+func (m *mockStore) WriteCallbackSignal(taskID, summary string) (int64, error) {
+	return 1, nil
+}
+
+func (m *mockStore) PollCallbackSignal(callbackID int64) (string, bool, error) {
+	return "", false, nil
+}
+
+func (m *mockStore) GetPendingCallback(taskID string) (int64, string, bool, error) {
+	return 0, "", false, nil
+}
+
+func (m *mockStore) WriteCallbackVerdict(callbackID int64, verdict string) error {
+	return nil
 }
 
 // recordingMockStore wraps a mockStore and records tool-call invocations.
@@ -798,12 +817,62 @@ func TestRunTask_EmitsTaskFinalizedOnCommitted(t *testing.T) {
 		t.Errorf("expected FinalState COMMITTED, got %s", f.FinalState)
 	}
 	if f.FinalOutputRef == "" {
-		t.Error("expected non-empty FinalOutputRef (the committed diff)")
+		t.Errorf("expected non-empty FinalOutputRef, got %q", f.FinalOutputRef)
 	}
 	if f.TaskID != task.ID {
 		t.Errorf("expected TaskID %s, got %s", task.ID, f.TaskID)
 	}
 }
+
+type mockBlockingWorker struct {
+	dbPath string
+}
+
+func (m *mockBlockingWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *git.Worktree, feedback string, em orchestrator.Emitter) error {
+	cmd := exec.CommandContext(ctx, "go", "run", "github.com/denialbb/limen/cmd/limen", "ready-for-review", "--task-id", task.ID, "--summary", "mock summary", "--db-path", m.dbPath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ready-for-review failed: %w, out: %s", err, string(out))
+	}
+	if !strings.Contains(string(out), "mocked verdict") {
+		return fmt.Errorf("unexpected verdict: %s", string(out))
+	}
+	return nil
+}
+
+func TestBlockingCallbackRoundTrip(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := state.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	task, _ := store.CreateTask("task-1", 5)
+
+	router := &mockRouter{decision: orchestrator.DecisionProceed}
+	worker := &mockBlockingWorker{dbPath: dbPath}
+	validator := &mockValidator{passes: true}
+	gitMock := &mockGit{valid: true}
+
+	orch := newTestOrchestrator(store, router, worker, validator, gitMock)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := orch.RunTask(ctx, task.ID); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	tTask, err := store.GetTask(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tTask.CurrentState != state.StateCommitted {
+		t.Errorf("expected state COMMITTED, got: %s", tTask.CurrentState)
+	}
+}
+
 
 // TestRunTask_EmitsTaskFinalizedOnEscalation verifies that the FAILED_ESCALATED
 // terminal state (via router Escalate) emits exactly one TaskFinalized event

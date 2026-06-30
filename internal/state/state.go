@@ -89,6 +89,20 @@ type Store interface {
 	// TransitionAndRecordContextSnapshot transitions the task to newState and records
 	// the context snapshot in a single atomic transaction.
 	TransitionAndRecordContextSnapshot(id string, newState TaskState, snapshot string) error
+
+	// WriteCallbackSignal writes a pending callback signal and returns its ID.
+	WriteCallbackSignal(taskID, summary string) (int64, error)
+
+	// PollCallbackSignal checks if the callback has a verdict.
+	// Returns the verdict, a boolean indicating if it's completed, and error.
+	PollCallbackSignal(callbackID int64) (string, bool, error)
+
+	// GetPendingCallback retrieves a pending callback for a task.
+	// Returns (callbackID, summary, found, error).
+	GetPendingCallback(taskID string) (int64, string, bool, error)
+
+	// WriteCallbackVerdict writes the verdict for a pending callback, marking it completed.
+	WriteCallbackVerdict(callbackID int64, verdict string) error
 }
 
 // IsValidTransition encodes the Limen Task State Machine.
