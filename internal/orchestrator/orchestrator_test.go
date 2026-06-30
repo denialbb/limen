@@ -249,7 +249,7 @@ func worktreeRoot() string {
 
 func TestRunTask_Success(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-1", 3)
+	task, _ := store.CreateTask("task-1", 3, "")
 
 	router := &mockRouter{decision: orchestrator.DecisionProceed}
 	worker := &mockWorker{}
@@ -276,7 +276,7 @@ func TestRunTask_Success(t *testing.T) {
 
 func TestRunTask_EscalateOnRouter(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-1", 3)
+	task, _ := store.CreateTask("task-1", 3, "")
 
 	router := &mockRouter{decision: orchestrator.DecisionEscalate}
 	worker := &mockWorker{}
@@ -299,7 +299,7 @@ func TestRunTask_EscalateOnRouter(t *testing.T) {
 
 func TestRunTask_ValidatorRetry(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-1", 1) // Only 1 retry allowed
+	task, _ := store.CreateTask("task-1", 1, "") // Only 1 retry allowed
 
 	router := &mockRouter{decision: orchestrator.DecisionProceed}
 	worker := &mockWorker{}
@@ -342,7 +342,7 @@ func TestRunTask_ValidatorRetry(t *testing.T) {
 
 func TestRunTask_GitInvalid(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-1", 3)
+	task, _ := store.CreateTask("task-1", 3, "")
 
 	router := &mockRouter{decision: orchestrator.DecisionProceed}
 	worker := &mockWorker{}
@@ -377,7 +377,7 @@ func TestRunTask_TaskNotFound(t *testing.T) {
 
 func TestRunTask_WorkerError(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-1", 3)
+	task, _ := store.CreateTask("task-1", 3, "")
 
 	router := &mockRouter{decision: orchestrator.DecisionProceed}
 
@@ -398,7 +398,7 @@ func TestRunTask_WorkerError(t *testing.T) {
 
 func TestRunTask_RouterExpand(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-1", 3)
+	task, _ := store.CreateTask("task-1", 3, "")
 
 	router := &mockRouter{decision: orchestrator.DecisionExpand}
 	worker := &mockWorker{}
@@ -464,7 +464,7 @@ var _ orchestrator.Worker = (*mockErrorWorker)(nil)
 
 func TestRunTask_GitError(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-1", 3)
+	task, _ := store.CreateTask("task-1", 3, "")
 
 	router := &mockRouter{decision: orchestrator.DecisionProceed}
 	worker := &mockWorker{}
@@ -483,7 +483,7 @@ func TestRunTask_GitError(t *testing.T) {
 
 func TestRunTask_RouterError(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-1", 3)
+	task, _ := store.CreateTask("task-1", 3, "")
 
 	router := &mockErrorRouter{}
 	worker := &mockWorker{}
@@ -502,7 +502,7 @@ func TestRunTask_RouterError(t *testing.T) {
 
 func TestRunTask_ValidatorError(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-1", 3)
+	task, _ := store.CreateTask("task-1", 3, "")
 
 	router := &mockRouter{decision: orchestrator.DecisionProceed}
 	worker := &mockWorker{}
@@ -521,7 +521,7 @@ func TestRunTask_ValidatorError(t *testing.T) {
 
 func TestRunTask_CommitError(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-1", 3)
+	task, _ := store.CreateTask("task-1", 3, "")
 
 	router := &mockRouter{decision: orchestrator.DecisionProceed}
 	worker := &mockWorker{}
@@ -609,7 +609,7 @@ var _ orchestrator.Validator = (*mockErrorValidator)(nil)
 
 func TestRunTask_ContextCancellation(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-1", 3)
+	task, _ := store.CreateTask("task-1", 3, "")
 
 	router := &mockRouter{decision: orchestrator.DecisionProceed}
 	validator := &mockValidator{passes: true}
@@ -654,7 +654,7 @@ func (m *mockGitCancel) DestroyWorktree(ctx context.Context, wt *git.Worktree) e
 
 func TestRunTask_ConflictRepairLoop(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-1", 3)
+	task, _ := store.CreateTask("task-1", 3, "")
 
 	router := &mockRouter{decision: orchestrator.DecisionProceed}
 	worker := &mockWorker{}
@@ -747,7 +747,7 @@ func findStateChange(t *testing.T, rec *bus.RecorderEmitter, from, to state.Task
 // path. Each transition must publish exactly one event with the right pair.
 func TestRunTask_EmitsTaskStateChanged(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-events-1", 3)
+	task, _ := store.CreateTask("task-events-1", 3, "")
 
 	router := &mockRouter{decision: orchestrator.DecisionProceed}
 	worker := &mockWorker{}
@@ -797,7 +797,7 @@ func TestRunTask_EmitsTaskStateChanged(t *testing.T) {
 // reference recorded as the final output.
 func TestRunTask_EmitsTaskFinalizedOnCommitted(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-finalized-1", 3)
+	task, _ := store.CreateTask("task-finalized-1", 3, "")
 
 	router := &mockRouter{decision: orchestrator.DecisionProceed}
 	worker := &mockWorker{}
@@ -855,7 +855,7 @@ func TestBlockingCallbackRoundTrip(t *testing.T) {
 	}
 	defer store.Close()
 
-	task, _ := store.CreateTask("task-1", 5)
+	task, _ := store.CreateTask("task-1", 5, "")
 
 	router := &mockRouter{decision: orchestrator.DecisionProceed}
 	worker := &mockBlockingWorker{dbPath: dbPath}
@@ -886,7 +886,7 @@ func TestBlockingCallbackRoundTrip(t *testing.T) {
 // with an empty FinalOutputRef.
 func TestRunTask_EmitsTaskFinalizedOnEscalation(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-finalized-2", 3)
+	task, _ := store.CreateTask("task-finalized-2", 3, "")
 
 	router := &mockRouter{decision: orchestrator.DecisionEscalate}
 	worker := &mockWorker{}
@@ -921,7 +921,7 @@ func TestRunTask_EmitsTaskFinalizedOnEscalation(t *testing.T) {
 // after the conflict is resolved on the retry.
 func TestRunTask_EmitsConflictDetected(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-conflict-1", 3)
+	task, _ := store.CreateTask("task-conflict-1", 3, "")
 
 	router := &mockRouter{decision: orchestrator.DecisionProceed}
 	worker := &mockWorker{}
@@ -983,7 +983,7 @@ func (m *mockGitConflictAlways) ExtractConflictRegions(ctx context.Context, wt *
 // terminates with FAILED_ESCALATED and emits exactly one TaskFinalized event.
 func TestRunTask_EmitsTaskFinalizedOnConflictExhaustion(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-conflict-exhaust-1", 1)
+	task, _ := store.CreateTask("task-conflict-exhaust-1", 1, "")
 
 	router := &mockRouter{decision: orchestrator.DecisionProceed}
 	worker := &mockWorker{}
@@ -1024,7 +1024,7 @@ func TestRunTask_EmitsTaskFinalizedOnConflictExhaustion(t *testing.T) {
 // path, guarding against the lossy label-only recording fixed by BUG #1.
 func TestRunTask_RecordsToolCalls(t *testing.T) {
 	store := &recordingMockStore{mockStore: mockStore{tasks: make(map[string]*state.Task)}}
-	task, _ := store.CreateTask("task-tc-1", 3)
+	task, _ := store.CreateTask("task-tc-1", 3, "")
 
 	router := &mockRouter{decision: orchestrator.DecisionProceed}
 	worker := &mockWorker{}

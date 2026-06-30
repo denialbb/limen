@@ -68,7 +68,8 @@ func (s *SQLiteStore) createSchema() error {
 		max_retries INTEGER NOT NULL,
 		validation_decision TEXT,
 		final_output TEXT,
-		context_snapshot TEXT
+		context_snapshot TEXT,
+		prompt TEXT NOT NULL DEFAULT ''
 	);
 
 	CREATE TABLE IF NOT EXISTS state_transitions (
@@ -131,18 +132,21 @@ func (s *SQLiteStore) createSchema() error {
 		_, _ = s.db.Exec("ALTER TABLE tool_calls ADD COLUMN " + col + " TEXT NOT NULL DEFAULT ''")
 	}
 
+	// Migration for prompt column.
+	_, _ = s.db.Exec("ALTER TABLE tasks ADD COLUMN prompt TEXT NOT NULL DEFAULT ''")
+
 	return nil
 }
 
 // CreateTask initializes a task in the CREATED state.
-func (s *SQLiteStore) CreateTask(id string, maxRetries int) (*Task, error) {
+func (s *SQLiteStore) CreateTask(id string, maxRetries int, prompt string) (*Task, error) {
 	if maxRetries < 0 {
 		return nil, errors.New("max retries cannot be negative")
 	}
 
 	_, err := s.db.Exec(
-		"INSERT INTO tasks (id, current_state, retry_count, max_retries) VALUES (?, ?, ?, ?)",
-		id, StateCreated, 0, maxRetries,
+		"INSERT INTO tasks (id, current_state, retry_count, max_retries, prompt) VALUES (?, ?, ?, ?, ?)",
+		id, StateCreated, 0, maxRetries, prompt,
 	)
 	if err != nil {
 		if isUniqueConstraintError(err) {
@@ -156,6 +160,7 @@ func (s *SQLiteStore) CreateTask(id string, maxRetries int) (*Task, error) {
 		CurrentState: StateCreated,
 		RetryCount:   0,
 		MaxRetries:   maxRetries,
+		Prompt:       prompt,
 	}, nil
 }
 
@@ -165,7 +170,8 @@ func (s *SQLiteStore) GetTask(id string) (*Task, error) {
 		SELECT id, current_state, retry_count, max_retries,
 		       COALESCE(validation_decision, ''),
 		       COALESCE(final_output, ''),
-		       COALESCE(context_snapshot, '')
+		       COALESCE(context_snapshot, ''),
+		       COALESCE(prompt, '')
 		FROM tasks
 		WHERE id = ?`,
 		id,
@@ -180,6 +186,7 @@ func (s *SQLiteStore) GetTask(id string) (*Task, error) {
 		&task.ValidationDecision,
 		&task.FinalOutput,
 		&task.ContextSnapshot,
+		&task.Prompt,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrTaskNotFound

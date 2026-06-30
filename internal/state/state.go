@@ -35,6 +35,7 @@ type Task struct {
 	ValidationDecision string
 	FinalOutput        string
 	ContextSnapshot    string
+	Prompt             string
 }
 
 // ToolCall represents a single tool invocation recorded against a task.
@@ -50,7 +51,7 @@ type ToolCall struct {
 // The Go Core is the exclusive owner of this state, utilizing SQLite.
 type Store interface {
 	// CreateTask initializes a task in the CREATED state.
-	CreateTask(id string, maxRetries int) (*Task, error)
+	CreateTask(id string, maxRetries int, prompt string) (*Task, error)
 
 	// GetTask retrieves the current state of a task.
 	GetTask(id string) (*Task, error)

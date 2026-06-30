@@ -270,6 +270,7 @@ func printUsage() {
 func runTUICmd() {
 	tuiFlags := flag.NewFlagSet("tui", flag.ExitOnError)
 	taskID := tuiFlags.String("task-id", "", "The ID of the task to run")
+	prompt := tuiFlags.String("prompt", "", "The initial prompt for the task")
 	dbPath := tuiFlags.String("db-path", "limen.db", "Path to the SQLite database")
 	repoPath := tuiFlags.String("repo-path", ".", "Path to the target git repository")
 	mockFlag := tuiFlags.Bool("mock", true, "Use Python mock backend for cognitive components")
@@ -288,14 +289,20 @@ func runTUICmd() {
 		os.Exit(1)
 	}
 
+	if *prompt == "" {
+		fmt.Fprintf(os.Stderr, "--prompt is required\n")
+		tuiFlags.Usage()
+		os.Exit(1)
+	}
+
 	if !isTTY(os.Stdout.Fd()) {
 		// NOTE: Non-interactive stdout. Fall back to the one-shot log style so
 		// pipes and CI get the same outcome reporting without ANSI pollution.
-		runTaskOneShot(*taskID, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend, *validatorCmd)
+		runTaskOneShot(*taskID, *prompt, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend, *validatorCmd)
 		return
 	}
 
-	runTaskInteractive(*taskID, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend, *validatorCmd)
+	runTaskInteractive(*taskID, *prompt, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend, *validatorCmd)
 }
 
 // isTTY reports whether the given file descriptor is an interactive terminal.
@@ -309,7 +316,7 @@ func isTTY(fd uintptr) bool {
 // Bubble Tea program in the foreground. After the program exits, a single
 // final-state line is printed so scripts that parse the trailing output still
 // get the outcome.
-func runTaskInteractive(taskID, dbPath, repoPath string, mock bool, mockTranscript string, workerBackend string, validatorCmd string) {
+func runTaskInteractive(taskID, prompt, dbPath, repoPath string, mock bool, mockTranscript string, workerBackend string, validatorCmd string) {
 	store, err := state.NewSQLiteStore(dbPath)
 	if err != nil {
 		log.Fatalf("Failed to initialize SQLite store: %v", err)
@@ -367,7 +374,7 @@ func runTaskInteractive(taskID, dbPath, repoPath string, mock bool, mockTranscri
 		worktreeRoot,
 	)
 
-	if _, err := store.CreateTask(taskID, 3); err != nil {
+	if _, err := store.CreateTask(taskID, 3, prompt); err != nil {
 		log.Printf("Note: failed to create task %s (it may already exist): %v", taskID, err)
 	}
 
@@ -398,13 +405,18 @@ func runTaskInteractive(taskID, dbPath, repoPath string, mock bool, mockTranscri
 		eventBus.Close()
 	}()
 
-	program := tea.NewProgram(model, tea.WithAltScreen())
+	program := tea.NewProgram(model)
 	finalModel, err := program.Run()
 	cancel()  // signal the orchestrator to stop on early quit
 	wg.Wait() // let it clean up (DestroyWorktree) before exiting
 	if err != nil {
 		log.Fatalf("TUI exited with error: %v", err)
 	}
+
+	// Clear screen and return to normal terminal state
+	clearCmd := exec.Command("clear")
+	clearCmd.Stdout = os.Stdout
+	_ = clearCmd.Run()
 
 	if m, ok := finalModel.(tui.Model); ok {
 		fmt.Fprintln(os.Stdout, m.String())
@@ -416,7 +428,7 @@ func runTaskInteractive(taskID, dbPath, repoPath string, mock bool, mockTranscri
 // creation, RunTask execution, and final state logging. Both the explicit
 // `run-task` subcommand and the non-TTY fallback from `runTUICmd` delegate here
 // to avoid duplicating the setup and teardown logic.
-func runTaskWithConfig(taskID, dbPath, repoPath string, mock bool, mockTranscript string, workerBackend string, validatorCmd string) {
+func runTaskWithConfig(taskID, prompt, dbPath, repoPath string, mock bool, mockTranscript string, workerBackend string, validatorCmd string) {
 	store, err := state.NewSQLiteStore(dbPath)
 	if err != nil {
 		log.Fatalf("Failed to initialize SQLite store: %v", err)
@@ -478,7 +490,7 @@ func runTaskWithConfig(taskID, dbPath, repoPath string, mock bool, mockTranscrip
 
 	// Ensure the task exists. This is for convenience during early development.
 	// Production may expect the task to be created by another command/API.
-	if _, err := store.CreateTask(taskID, 3); err != nil {
+	if _, err := store.CreateTask(taskID, 3, prompt); err != nil {
 		log.Printf("Note: failed to create task %s (it may already exist): %v", taskID, err)
 	}
 
@@ -497,13 +509,14 @@ func runTaskWithConfig(taskID, dbPath, repoPath string, mock bool, mockTranscrip
 
 // runTaskOneShot is the non-TTY fallback. It reuses the run-task log-style
 // output and shares the same setup path as the explicit `run-task` subcommand.
-func runTaskOneShot(taskID, dbPath, repoPath string, mock bool, mockTranscript string, workerBackend string, validatorCmd string) {
-	runTaskWithConfig(taskID, dbPath, repoPath, mock, mockTranscript, workerBackend, validatorCmd)
+func runTaskOneShot(taskID, prompt, dbPath, repoPath string, mock bool, mockTranscript string, workerBackend string, validatorCmd string) {
+	runTaskWithConfig(taskID, prompt, dbPath, repoPath, mock, mockTranscript, workerBackend, validatorCmd)
 }
 
 func runTaskCmd() {
 	runTaskFlags := flag.NewFlagSet("run-task", flag.ExitOnError)
 	taskID := runTaskFlags.String("task-id", "", "The ID of the task to run")
+	prompt := runTaskFlags.String("prompt", "", "The initial prompt for the task")
 	dbPath := runTaskFlags.String("db-path", "limen.db", "Path to the SQLite database")
 	repoPath := runTaskFlags.String("repo-path", ".", "Path to the target git repository")
 	mockFlag := runTaskFlags.Bool("mock", true, "Use Python mock backend for cognitive components")
@@ -522,7 +535,13 @@ func runTaskCmd() {
 		os.Exit(1)
 	}
 
-	runTaskWithConfig(*taskID, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend, *validatorCmd)
+	if *prompt == "" {
+		fmt.Fprintf(os.Stderr, "--prompt is required\n")
+		runTaskFlags.Usage()
+		os.Exit(1)
+	}
+
+	runTaskWithConfig(*taskID, *prompt, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend, *validatorCmd)
 }
 
 func runReadyForReviewCmd() {

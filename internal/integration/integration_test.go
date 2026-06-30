@@ -141,7 +141,7 @@ func TestFullOrchestrationCycle(t *testing.T) {
 	orch := orchestrator.NewOrchestrator(store, b, router, retriever, worker, validator, gitClient, worktreeRoot)
 
 	taskID := "task-integration-1"
-	_, err = store.CreateTask(taskID, 3)
+	_, err = store.CreateTask(taskID, 3, "")
 	if err != nil {
 		t.Fatalf("Failed to create task: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestFullOrchestrationCycle_ValidatorRetry(t *testing.T) {
 	orch := orchestrator.NewOrchestrator(store, b, router, retriever, worker, validator, gitClient, worktreeRoot)
 
 	taskID := "task-integration-2"
-	_, err = store.CreateTask(taskID, 2)
+	_, err = store.CreateTask(taskID, 2, "")
 	if err != nil {
 		t.Fatalf("Failed to create task: %v", err)
 	}
@@ -477,7 +477,7 @@ func TestSubmitVerdict(t *testing.T) {
 	defer store.Close()
 	
 	taskID := "test-submit-verdict-task"
-	_, err = store.CreateTask(taskID, 3)
+	_, err = store.CreateTask(taskID, 3, "")
 	if err != nil {
 		t.Fatalf("Failed to create task: %v", err)
 	}
@@ -584,7 +584,7 @@ func TestValidatorThrowawayWorktree(t *testing.T) {
 	orch := orchestrator.NewOrchestrator(store, b, router, retriever, worker, validator, gitClient, worktreeRoot)
 
 	taskID := "task-debris"
-	_, err = store.CreateTask(taskID, 3)
+	_, err = store.CreateTask(taskID, 3, "")
 	if err != nil {
 		t.Fatalf("Failed to create task: %v", err)
 	}

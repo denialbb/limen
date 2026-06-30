@@ -23,7 +23,7 @@ func newTestStore(t *testing.T) *state.SQLiteStore {
 func TestCreateTask(t *testing.T) {
 	store := newTestStore(t)
 
-	task, err := store.CreateTask("task-123", 3)
+	task, err := store.CreateTask("task-123", 3, "")
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -47,9 +47,9 @@ func TestCreateTask(t *testing.T) {
 
 func TestCreateTaskAlreadyExists(t *testing.T) {
 	store := newTestStore(t)
-	_, _ = store.CreateTask("task-123", 3)
+	_, _ = store.CreateTask("task-123", 3, "")
 
-	_, err := store.CreateTask("task-123", 3)
+	_, err := store.CreateTask("task-123", 3, "")
 	if !errors.Is(err, state.ErrTaskAlreadyExists) {
 		t.Errorf("expected ErrTaskAlreadyExists, got: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestCreateTaskAlreadyExists(t *testing.T) {
 
 func TestGetTask(t *testing.T) {
 	store := newTestStore(t)
-	_, _ = store.CreateTask("task-123", 3)
+	_, _ = store.CreateTask("task-123", 3, "")
 
 	task, err := store.GetTask("task-123")
 	if err != nil {
@@ -79,7 +79,7 @@ func TestGetTaskNotFound(t *testing.T) {
 
 func TestValidStateTransition(t *testing.T) {
 	store := newTestStore(t)
-	_, _ = store.CreateTask("task-123", 3)
+	_, _ = store.CreateTask("task-123", 3, "")
 
 	err := store.TransitionState("task-123", state.StateContextBuilding)
 	if err != nil {
@@ -98,7 +98,7 @@ func TestValidStateTransition(t *testing.T) {
 
 func TestInvalidStateTransition(t *testing.T) {
 	store := newTestStore(t)
-	_, _ = store.CreateTask("task-123", 3)
+	_, _ = store.CreateTask("task-123", 3, "")
 
 	// Attempting to jump directly from CREATED to COMMITTED is illegal
 	err := store.TransitionState("task-123", state.StateCommitted)
@@ -122,7 +122,7 @@ func TestTransitionTaskNotFound(t *testing.T) {
 func TestAllValidTransitions(t *testing.T) {
 	store := newTestStore(t)
 	id := "task-1"
-	_, _ = store.CreateTask(id, 3)
+	_, _ = store.CreateTask(id, 3, "")
 
 	transitions := []state.TaskState{
 		state.StateContextBuilding,
@@ -154,7 +154,7 @@ func mustTransition(t *testing.T, store state.Store, id string, to state.TaskSta
 
 func TestIncrementRetry(t *testing.T) {
 	store := newTestStore(t)
-	_, _ = store.CreateTask("task-123", 2)
+	_, _ = store.CreateTask("task-123", 2, "")
 
 	// NOTE: IncrementRetry requires the task to be in StateRevisionRequested.
 	walkToRevision := func() {
@@ -202,7 +202,7 @@ func TestIncrementRetry(t *testing.T) {
 
 func TestIncrementRetry_GuardNotInRevisionRequested(t *testing.T) {
 	store := newTestStore(t)
-	_, _ = store.CreateTask("task-123", 3)
+	_, _ = store.CreateTask("task-123", 3, "")
 
 	// Task is in CREATED, not RevisionRequested – IncrementRetry should reject.
 	err := store.IncrementRetry("task-123")
@@ -213,7 +213,7 @@ func TestIncrementRetry_GuardNotInRevisionRequested(t *testing.T) {
 
 func TestIncrementRetry_GuardTerminalState(t *testing.T) {
 	store := newTestStore(t)
-	_, _ = store.CreateTask("task-terminal", 3)
+	_, _ = store.CreateTask("task-terminal", 3, "")
 
 	mustTransition(t, store, "task-terminal", state.StateContextBuilding)
 	mustTransition(t, store, "task-terminal", state.StateRoutingEvaluation)
@@ -246,7 +246,7 @@ func TestIncrementRetryTaskNotFound(t *testing.T) {
 
 func TestRecordToolCall(t *testing.T) {
 	store := newTestStore(t)
-	_, _ = store.CreateTask("task-123", 3)
+	_, _ = store.CreateTask("task-123", 3, "")
 
 	if err := store.RecordToolCall("task-123", "tool-1", "arg1", "resp1"); err != nil {
 		t.Fatalf("expected no error recording tool call, got: %v", err)
@@ -266,7 +266,7 @@ func TestRecordToolCallTaskNotFound(t *testing.T) {
 // guards against the lossy label-only trace addressed by BUG #1.
 func TestRecordToolCall_ArgsResponsePersisted(t *testing.T) {
 	store := newTestStore(t)
-	_, _ = store.CreateTask("task-123", 3)
+	_, _ = store.CreateTask("task-123", 3, "")
 
 	if err := store.RecordToolCall("task-123", "write_file", `{"path":"a.txt"}`, `{"ok":true}`); err != nil {
 		t.Fatalf("expected no error, got: %v", err)
@@ -301,7 +301,7 @@ func TestRecordToolCall_ArgsResponsePersisted(t *testing.T) {
 
 func TestRecordValidationDecision(t *testing.T) {
 	store := newTestStore(t)
-	_, _ = store.CreateTask("task-123", 3)
+	_, _ = store.CreateTask("task-123", 3, "")
 
 	if err := store.RecordValidationDecision("task-123", false, "needs work"); err != nil {
 		t.Fatalf("expected no error recording validation decision, got: %v", err)
@@ -327,7 +327,7 @@ func TestRecordValidationDecisionTaskNotFound(t *testing.T) {
 
 func TestRecordFinalOutput(t *testing.T) {
 	store := newTestStore(t)
-	_, _ = store.CreateTask("task-123", 3)
+	_, _ = store.CreateTask("task-123", 3, "")
 
 	if err := store.RecordFinalOutput("task-123", "final answer"); err != nil {
 		t.Fatalf("expected no error recording final output, got: %v", err)
@@ -353,7 +353,7 @@ func TestRecordFinalOutputTaskNotFound(t *testing.T) {
 
 func TestStateTransitionsRecorded(t *testing.T) {
 	store := newTestStore(t)
-	_, _ = store.CreateTask("task-123", 3)
+	_, _ = store.CreateTask("task-123", 3, "")
 
 	mustTransition(t, store, "task-123", state.StateContextBuilding)
 	mustTransition(t, store, "task-123", state.StateRoutingEvaluation)
@@ -378,7 +378,7 @@ func TestStateTransitionsRecorded(t *testing.T) {
 
 func TestValidationDecisionsAppended(t *testing.T) {
 	store := newTestStore(t)
-	_, _ = store.CreateTask("task-123", 3)
+	_, _ = store.CreateTask("task-123", 3, "")
 
 	if err := store.RecordValidationDecision("task-123", false, "needs work"); err != nil {
 		t.Fatalf("expected no error recording first decision, got: %v", err)
@@ -407,7 +407,7 @@ func TestValidationDecisionsAppended(t *testing.T) {
 
 func TestRecordContextSnapshot(t *testing.T) {
 	store := newTestStore(t)
-	_, _ = store.CreateTask("task-123", 3)
+	_, _ = store.CreateTask("task-123", 3, "")
 
 	if err := store.RecordContextSnapshot("task-123", "snapshot-data"); err != nil {
 		t.Fatalf("expected no error recording context snapshot, got: %v", err)
@@ -438,7 +438,7 @@ func TestRecordContextSnapshotTaskNotFound(t *testing.T) {
 // final-output window (BUG #3).
 func TestTransitionAndRecordFinalOutput_Atomic(t *testing.T) {
 	store := newTestStore(t)
-	_, _ = store.CreateTask("task-tx", 3)
+	_, _ = store.CreateTask("task-tx", 3, "")
 
 	// Walk the task to AWAITING_VALIDATION so APPROVED is a valid transition.
 	mustTransition(t, store, "task-tx", state.StateContextBuilding)
@@ -506,7 +506,7 @@ func TestTransitionAndRecordFinalOutput_TaskNotFound(t *testing.T) {
 // eliminating the CONTEXT_BUILDING-without-snapshot window (BUG #3).
 func TestTransitionAndRecordContextSnapshot_Atomic(t *testing.T) {
 	store := newTestStore(t)
-	_, _ = store.CreateTask("task-tx", 3)
+	_, _ = store.CreateTask("task-tx", 3, "")
 	// Task starts in CREATED; CONTEXT_BUILDING is a valid transition.
 
 	// --- happy path: both state and snapshot are set atomically ---
@@ -558,7 +558,7 @@ func TestTransitionAndRecordContextSnapshot_TaskNotFound(t *testing.T) {
 // reads, and a task-not-found error rolls back cleanly without side effects.
 func TestRecordFinalOutput_Transactional(t *testing.T) {
 	store := newTestStore(t)
-	_, _ = store.CreateTask("task-tx", 3)
+	_, _ = store.CreateTask("task-tx", 3, "")
 
 	// Write final output and verify it is immediately visible.
 	if err := store.RecordFinalOutput("task-tx", "committed-output"); err != nil {
@@ -583,7 +583,7 @@ func TestRecordFinalOutput_Transactional(t *testing.T) {
 // writes are atomic and visible after a successful call.
 func TestRecordContextSnapshot_Transactional(t *testing.T) {
 	store := newTestStore(t)
-	_, _ = store.CreateTask("task-tx", 3)
+	_, _ = store.CreateTask("task-tx", 3, "")
 
 	if err := store.RecordContextSnapshot("task-tx", "ctx-data"); err != nil {
 		t.Fatalf("expected no error, got: %v", err)

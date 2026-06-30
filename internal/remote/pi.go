@@ -55,7 +55,7 @@ func (w *piWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *gi
 	}
 
 	// Construct the prompt
-	promptText := fmt.Sprintf("Task ID: %s\n\nPlease implement the task as described. When you are finished, you MUST run the command `limen ready-for-review --task-id %s --summary \"<summary>\"`. Wait for the verdict. If it says approved, you can finish. If it says rejected with feedback, you must revise your work and then call ready-for-review again.", task.ID, task.ID)
+	promptText := fmt.Sprintf("Task ID: %s\n\nTask: %s\n\nWhen you are finished, you MUST run the command `limen ready-for-review --task-id %s --summary \"<summary>\"`. Wait for the verdict. If it says approved, you can finish. If it says rejected with feedback, you must revise your work and then call ready-for-review again.", task.ID, task.Prompt, task.ID)
 	if feedback != "" {
 		promptText += fmt.Sprintf("\n\nPrevious feedback:\n%s", feedback)
 	}
@@ -82,22 +82,14 @@ func (w *piWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *gi
 		}
 
 		msgType, _ := msg["type"].(string)
-		
+
 		if msgType == "agent_end" {
 			break
 		}
-		
+
 		if em != nil {
-			if msgType == "message_update" {
-				// We can publish this as a WorkerToolCall or similar event if needed
-				content, _ := msg["content"].(string)
-				em.Publish(&bus.WorkerToolCall{
-					TaskID:    task.ID,
-					Tool:      "pi_message",
-					Args:      content,
-					Timestamp: time.Now(),
-				})
-			} else if strings.HasPrefix(msgType, "tool_execution_") {
+			// Skip reasoning messages (message_update); only publish tool executions
+			if strings.HasPrefix(msgType, "tool_execution_") {
 				toolName, _ := msg["tool"].(string)
 				em.Publish(&bus.WorkerToolCall{
 					TaskID:    task.ID,
