@@ -330,17 +330,44 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 					if err := o.transitionAndEmit(task.ID, state.StateAwaitingValidation, em); err != nil {
 						return err
 					}
-					// Mock a verdict into the DB per spike requirements
-					_ = o.store.WriteCallbackVerdict(cbID, "mocked verdict")
 					
-					// Worker is still running, transition back via REVISION_REQUESTED
-					if err := o.transitionAndEmit(task.ID, state.StateRevisionRequested, em); err != nil {
+					diff, err := o.git.GetWorktreeDiff(ctx, wt)
+					if err != nil {
 						return err
 					}
-					// We must increment retry to satisfy state invariants
-					_ = o.store.IncrementRetry(task.ID)
-					if err := o.transitionAndEmit(task.ID, state.StateWorkerRunning, em); err != nil {
+
+					tempWt, err := o.git.ProvisionThrowawayWorktree(ctx, diff)
+					if err != nil {
 						return err
+					}
+
+					o.recordToolCall(task.ID, "validator.Evaluate", "", "")
+					passes, validationFeedback, err := o.validator.Evaluate(ctx, task, tempWt, em)
+					
+					_ = o.git.DestroyWorktree(context.WithoutCancel(ctx), tempWt)
+					if err != nil {
+						return err
+					}
+
+					if err := o.store.RecordValidationDecision(task.ID, passes, validationFeedback); err != nil {
+						return err
+					}
+					
+					verdictStr := fmt.Sprintf(`{"passes":%t,"feedback":%q}`, passes, validationFeedback)
+					_ = o.store.WriteCallbackVerdict(cbID, verdictStr)
+					
+					if passes {
+						if err := o.transitionAndEmit(task.ID, state.StateWorkerRunning, em); err != nil {
+							return err
+						}
+					} else {
+						if err := o.transitionAndEmit(task.ID, state.StateRevisionRequested, em); err != nil {
+							return err
+						}
+						_ = o.store.IncrementRetry(task.ID)
+						if err := o.transitionAndEmit(task.ID, state.StateWorkerRunning, em); err != nil {
+							return err
+						}
 					}
 				}
 			}
