@@ -61,3 +61,4 @@ limen.db*
 state.json
 .demo-hitl.db
 /demo/
+.claude/worktrees/
