@@ -204,6 +204,8 @@ func main() {
 	switch command {
 	case "run-task":
 		runTaskCmd()
+	case "ready-for-review":
+		runReadyForReviewCmd()
 	case "tui":
 		// NOTE: Explicit alias for the default bare invocation. Kept so that
 		// subcommand-style invocation remains available alongside the simple form.
@@ -223,9 +225,10 @@ func main() {
 func printUsage() {
 	fmt.Fprintf(os.Stderr, "Usage: limen [command] [arguments]\n")
 	fmt.Fprintf(os.Stderr, "Commands:\n")
-	fmt.Fprintf(os.Stderr, "  limen            Launch the interactive TUI (default)\n")
-	fmt.Fprintf(os.Stderr, "  limen tui        Alias for the default interactive TUI\n")
-	fmt.Fprintf(os.Stderr, "  limen run-task   Run a task through the orchestrator (one-shot)\n")
+	fmt.Fprintf(os.Stderr, "  limen                  Launch the interactive TUI (default)\n")
+	fmt.Fprintf(os.Stderr, "  limen tui              Alias for the default interactive TUI\n")
+	fmt.Fprintf(os.Stderr, "  limen run-task         Run a task through the orchestrator (one-shot)\n")
+	fmt.Fprintf(os.Stderr, "  limen ready-for-review Write a ready signal to the DB and poll for a verdict\n")
 }
 
 // runTUICmd launches the interactive terminal UI.
@@ -484,3 +487,45 @@ func runTaskCmd() {
 
 	runTaskWithConfig(*taskID, *dbPath, *repoPath, *mockFlag, *mockTranscript)
 }
+
+func runReadyForReviewCmd() {
+	flags := flag.NewFlagSet("ready-for-review", flag.ExitOnError)
+	taskID := flags.String("task-id", "", "The ID of the task")
+	dbPath := flags.String("db-path", "limen.db", "Path to the SQLite database")
+	summary := flags.String("summary", "", "Summary of the changes ready for review")
+
+	if err := flags.Parse(os.Args[2:]); err != nil {
+		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
+		os.Exit(1)
+	}
+
+	if *taskID == "" || *summary == "" {
+		fmt.Fprintf(os.Stderr, "--task-id and --summary are required\n")
+		flags.Usage()
+		os.Exit(1)
+	}
+
+	store, err := state.NewSQLiteStore(*dbPath)
+	if err != nil {
+		log.Fatalf("Failed to initialize SQLite store: %v", err)
+	}
+	defer store.Close()
+
+	cbID, err := store.WriteCallbackSignal(*taskID, *summary)
+	if err != nil {
+		log.Fatalf("Failed to write callback signal: %v", err)
+	}
+
+	for {
+		verdict, completed, err := store.PollCallbackSignal(cbID)
+		if err != nil {
+			log.Fatalf("Error polling callback: %v", err)
+		}
+		if completed {
+			fmt.Println(verdict)
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+

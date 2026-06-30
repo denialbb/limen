@@ -307,8 +307,45 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 		}
 
 		o.recordToolCall(task.ID, "worker.ProduceSolution", "", "")
-		if err := o.worker.ProduceSolution(ctx, task, wt, feedback, em); err != nil {
-			return err
+		
+		workerErrCh := make(chan error, 1)
+		go func() {
+			workerErrCh <- o.worker.ProduceSolution(ctx, task, wt, feedback, em)
+		}()
+
+		var wErr error
+	workerLoop:
+		for {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case err := <-workerErrCh:
+				wErr = err
+				break workerLoop
+			case <-time.After(200 * time.Millisecond):
+				cbID, _, found, err := o.store.GetPendingCallback(task.ID)
+				if err == nil && found {
+					if err := o.transitionAndEmit(task.ID, state.StateAwaitingValidation, em); err != nil {
+						return err
+					}
+					// Mock a verdict into the DB per spike requirements
+					_ = o.store.WriteCallbackVerdict(cbID, "mocked verdict")
+					
+					// Worker is still running, transition back via REVISION_REQUESTED
+					if err := o.transitionAndEmit(task.ID, state.StateRevisionRequested, em); err != nil {
+						return err
+					}
+					// We must increment retry to satisfy state invariants
+					_ = o.store.IncrementRetry(task.ID)
+					if err := o.transitionAndEmit(task.ID, state.StateWorkerRunning, em); err != nil {
+						return err
+					}
+				}
+			}
+		}
+
+		if wErr != nil {
+			return wErr
 		}
 
 		select {
@@ -317,6 +354,7 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 		default:
 		}
 
+		// Since we transitioned back to WORKER_RUNNING, we can safely transition to AWAITING_VALIDATION
 		if err := o.transitionAndEmit(task.ID, state.StateAwaitingValidation, em); err != nil {
 			return err
 		}
