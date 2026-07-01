@@ -74,16 +74,15 @@ Key names follow tmux `send-keys` conventions.
 # Start TUI
 ./scripts/tui-start.sh limen-tui --task-id test-fix-add --prompt "Fix add function" --repo-path /tmp/test-repo --mock=false --worker-backend pi --validator-cmd "go test ./..."
 
-# Wait for render
-sleep 2
+# Poll until terminal state (COMMITTED, FAILED_ESCALATED, or "done")
+until ./scripts/tui-capture.sh limen-tui | grep -q "COMMITTED\|FAILED_ESCALATED\|done"; do sleep 3; done
 
-# Capture and inspect
+# Capture and inspect final state
 ./scripts/tui-capture.sh limen-tui
 
-# If orchestrator done, check final state
-./scripts/tui-capture.sh limen-tui
-
-# Quit and clean up
+# ALWAYS send q to quit the app gracefully before stopping the session
+./scripts/tui-send.sh limen-tui "q"
+sleep 1
 ./scripts/tui-stop.sh limen-tui
 ```
 
@@ -93,4 +92,4 @@ sleep 2
 - PNG capture requires a running X display (`$DISPLAY` set). In headless CI, skip `--png`.
 - Session name must be unique per concurrent run; pass a distinct name if running multiple tasks.
 - `tui-start.sh` kills any existing session with the same name before starting.
-- To quit the TUI from within the session, send `q`: `./scripts/tui-send.sh limen-tui "q"`. This gracefully stops the orchestrator. `tui-stop.sh` kills the tmux session but does NOT send quit to the app first — prefer `tui-send.sh q` then `tui-stop.sh` for a clean shutdown.
+- **Always send `q` before stopping**: `./scripts/tui-send.sh limen-tui "q"` gracefully quits the app and cleans up worktrees. `tui-stop.sh` only kills the tmux session — if you call it without `q` first, the orchestrator goroutine and Pi subprocess may not be cleaned up. Always use `tui-send.sh q` then `tui-stop.sh`.

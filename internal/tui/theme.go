@@ -35,6 +35,15 @@ type Theme struct {
 	FooterBgColor string
 	FooterFgColor string
 
+	// Split layout constants.
+	SplitWidthThreshold   int     // terminal width to enter split mode
+	SplitHeightThreshold  int     // terminal height to enter split mode
+	SplitLeftWidthPct     float64 // fraction of width for the left column
+	SplitRouterHeightPct  float64 // fraction of left column height for the router panel
+	SplitWorkersHeightPct float64 // fraction of right column height for the workers panel
+	SplitDividerColor     string  // color for │ column divider
+	SplitPanelTitleColor  string  // color for panel title lines (─ Router ────)
+
 	// Event coloring constants.
 	TimestampColor string
 	EventTextColor string
@@ -62,6 +71,14 @@ func NewTheme() *Theme {
 
 		FooterBgColor: "#45475a", // Surface 1
 		FooterFgColor: "#fab387", // Peach (high contrast text)
+
+		SplitWidthThreshold:   120,
+		SplitHeightThreshold:  30,
+		SplitLeftWidthPct:     0.30,
+		SplitRouterHeightPct:  0.35,
+		SplitWorkersHeightPct: 0.30,
+		SplitDividerColor:     "#45475a",
+		SplitPanelTitleColor:  "#7f849c",
 
 		TimestampColor: "#585b70", // Pale color (Surface 2)
 		EventTextColor: "#cdd6f4", // Normal foreground (Text)
@@ -132,6 +149,16 @@ func (t *Theme) TabStyles() (active, inactive lipgloss.Style) {
 		Padding(0, t.TabPadH)
 
 	return
+}
+
+// SplitDividerStyle returns a style for the vertical │ column divider.
+func (t *Theme) SplitDividerStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(t.SplitDividerColor))
+}
+
+// SplitPanelTitleStyle returns a style for split-mode panel title bars.
+func (t *Theme) SplitPanelTitleStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(t.SplitPanelTitleColor))
 }
 
 // FooterStyle returns a style for rendering the timeline completion footer.
