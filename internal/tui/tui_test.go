@@ -151,9 +151,11 @@ func TestEventRouting(t *testing.T) {
 		t.Fatalf("router line 2 = %q, want decision", routerLines[2])
 	}
 
+	// WorkerFinished is intentionally not rendered in the worker tab; the
+	// completion status shows in the WorkersPanel instead.
 	workerLines := m.worker.Lines()
-	if len(workerLines) != 5 {
-		t.Fatalf("worker lines = %v, want 5 entries", workerLines)
+	if len(workerLines) != 4 {
+		t.Fatalf("worker lines = %v, want 4 entries", workerLines)
 	}
 	if !strings.Contains(workerLines[0], "Worker started:") {
 		t.Fatalf("worker line 0 = %q, want Worker started", workerLines[0])
@@ -164,11 +166,8 @@ func TestEventRouting(t *testing.T) {
 	if !strings.Contains(workerLines[2], "File edit: x.txt") {
 		t.Fatalf("worker line 2 = %q, want File edit", workerLines[2])
 	}
-	if !strings.Contains(workerLines[3], "Worker finished") {
-		t.Fatalf("worker line 3 = %q, want Worker finished", workerLines[3])
-	}
-	if !strings.Contains(workerLines[4], "Conflict detected: 1 region(s)") {
-		t.Fatalf("worker line 4 = %q, want Conflict detected", workerLines[4])
+	if !strings.Contains(workerLines[3], "Conflict detected: 1 region(s)") {
+		t.Fatalf("worker line 3 = %q, want Conflict detected", workerLines[3])
 	}
 
 	validatorLines := m.validator.Lines()
@@ -182,10 +181,13 @@ func TestEventRouting(t *testing.T) {
 		t.Fatalf("validator line 2 = %q, want Verdict", validatorLines[2])
 	}
 
-	// Timeline received all 13 events.
+	// The timeline renders only milestone events, not the fine-grained ones
+	// (RouterExamining, WorkerToolCall, WorkerFileEdit, ValidatorExamining,
+	// ValidatorCriterionResult are shown in their own tabs). Of the 13
+	// published events, 8 are milestones.
 	timelineLines := m.timeline.Lines()
-	if len(timelineLines) != 13 {
-		t.Fatalf("timeline lines = %d, want 13", len(timelineLines))
+	if len(timelineLines) != 8 {
+		t.Fatalf("timeline lines = %d, want 8", len(timelineLines))
 	}
 
 	// TaskFinalized finalizes the model and auto-switches to the Timeline tab.
