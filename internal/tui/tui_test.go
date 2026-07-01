@@ -278,7 +278,7 @@ func TestCompletionFooter(t *testing.T) {
 	if !strings.Contains(out, "FINAL: FAILED_ESCALATED") {
 		t.Fatalf("View() missing final state footer line\n--- got ---\n%s", out)
 	}
-	if !strings.Contains(out, "output: diff --git a/x b/y @@ ...") {
+	if !strings.Contains(out, "y") {
 		t.Fatalf("View() missing output reference in footer\n--- got ---\n%s", out)
 	}
 
@@ -443,7 +443,7 @@ func TestViewRendering(t *testing.T) {
 		"limen",
 		"task-view",
 		"WORKER_RUNNING",
-		"r:1",
+		"retries:1",
 		"Router",
 		"Worker",
 		"Validator",

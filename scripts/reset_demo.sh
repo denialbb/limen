@@ -1,38 +1,22 @@
 #!/bin/bash
 
-# Reset the demo repository and clean up old databases
+# Reset the demo repository and clean up old databases.
+# Run from the project root: ./scripts/reset_demo.sh
 
-# Navigate to the project root
-cd /home/denial/Projects/limen
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR/.."
 
-# Reset the demo repository
-if [ -d ".demo-repo" ]; then
-	rm -rf .demo-repo
+if [ -d "demo" ]; then
+	rm -rf demo
 	echo "Demo repository reset successfully"
 else
 	echo "No demo repository found to reset"
 fi
 
-# Delete old databases
-for db in .demo*.db; do
-	if [ -f "$db" ]; then
-		rm "$db"
-		echo "Deleted database: $db"
-	fi
+# Delete SQLite databases and WAL/SHM side-files left in the project root.
+for db in limen.db .demo*.db; do
+	[ -f "$db" ] && rm "$db" && echo "Deleted: $db"
 done
-
-# Delete SQLite WAL files
-for wal in .demo*.db-wal; do
-	if [ -f "$wal" ]; then
-		rm "$wal"
-		echo "Deleted WAL file: $wal"
-	fi
-done
-
-# Delete SQLite SHM files
-for shm in .demo*.db-shm; do
-	if [ -f "$shm" ]; then
-		rm "$shm"
-		echo "Deleted SHM file: $shm"
-	fi
+for wal in limen.db-wal limen.db-shm .demo*.db-wal .demo*.db-shm; do
+	[ -f "$wal" ] && rm "$wal" && echo "Deleted: $wal"
 done

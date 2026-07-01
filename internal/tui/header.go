@@ -86,7 +86,7 @@ func (h Header) View() string {
 
 	right := lipgloss.JoinHorizontal(lipgloss.Top,
 		stateStyle.Render(stateName),
-		count.Render(fmt.Sprintf("r:%d e:%d", h.retryCount, h.expandCount)),
+		count.Render(fmt.Sprintf("retries:%d  expands:%d", h.retryCount, h.expandCount)),
 		markerView,
 	)
 

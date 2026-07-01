@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
+	ltree "github.com/charmbracelet/lipgloss/tree"
 
 	"github.com/denialbb/limen/internal/bus"
 )
@@ -21,6 +22,30 @@ var footerStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.Color("15")).
 	Padding(0, 1)
 
+// transitionEntry holds one buffered state-machine transition. Transitions are
+// collected and flushed as a lipgloss/tree block so they render with proper
+// ├─ / └─ connectors rather than as flat independent lines.
+type transitionEntry struct{ from, to string }
+
+// transitionStyle is the faint style used for both tree connectors and text.
+var transitionStyle = lipgloss.NewStyle().Faint(true).Foreground(lipgloss.Color("240"))
+
+// transitionEnumerator produces compact ├─ / └─ connectors.
+var transitionEnumerator ltree.Enumerator = func(ch ltree.Children, i int) string {
+	if i == ch.Length()-1 {
+		return "└─ "
+	}
+	return "├─ "
+}
+
+// transitionIndenter produces │  under live siblings and spaces under the last.
+var transitionIndenter ltree.Indenter = func(ch ltree.Children, i int) string {
+	if i == ch.Length()-1 {
+		return "   "
+	}
+	return "│  "
+}
+
 // TimelineTab renders every event the TUI receives, in publication order. It
 // is the canonical "all activity" view: the other tabs filter, this one shows
 // the full sequence including state-machine transitions and the final
@@ -28,6 +53,7 @@ var footerStyle = lipgloss.NewStyle().
 type TimelineTab struct {
 	viewport       viewport.Model
 	lines          []string
+	pending        []transitionEntry // buffered transitions, flushed as a tree block
 	finalState     string
 	finalOutputRef string
 	finalized      bool
@@ -76,25 +102,70 @@ func (t TimelineTab) Update(msg tea.Msg) (TimelineTab, tea.Cmd) {
 	return t, nil
 }
 
-// handleEvent formats and appends a single one-line event summary. It returns
-// the modified tab value so Update can thread it back under value semantics.
+// handleEvent processes one bus.Event. State transitions are buffered in
+// t.pending so they can be flushed as a tree block (├─/└─ connectors) before
+// the next semantic event, giving a clear visual hierarchy.
 func (t TimelineTab) handleEvent(ev bus.Event) TimelineTab {
 	if ev == nil {
 		return t
 	}
-	summary := summarizeEvent(ev)
-	if summary == "" {
+
+	if sc, ok := ev.(*bus.TaskStateChanged); ok {
+		t.pending = append(t.pending, transitionEntry{
+			from: string(sc.From),
+			to:   string(sc.To),
+		})
 		return t
 	}
-	appendLine(&t.lines, &t.viewport, t.viewport.Width, ev.Time(), summary)
+
+	// Non-transition event: flush any buffered transitions as a tree first.
+	t = t.flushPending()
+
+	summary := summarizeEvent(ev)
+	if summary != "" {
+		appendLine(&t.lines, &t.viewport, t.viewport.Width, ev.Time(), summary)
+	}
+
 	if fin, ok := ev.(*bus.TaskFinalized); ok {
 		t.finalized = true
 		t.finalState = string(fin.FinalState)
 		t.finalOutputRef = fin.FinalOutputRef
-		// Reserve vertical space for the completion footer now that it will
-		// render, so the viewport body does not overdraw it.
 		t = t.reserveFooterSpace()
 	}
+	return t
+}
+
+// flushPending renders buffered state transitions as a lipgloss/tree block and
+// appends the rendered lines to t.lines. The tree package handles ├─/└─
+// connectors automatically. No-op when there are no pending transitions.
+func (t TimelineTab) flushPending() TimelineTab {
+	if len(t.pending) == 0 {
+		return t
+	}
+
+	children := make([]any, len(t.pending))
+	for i, pe := range t.pending {
+		children[i] = pe.from + " → " + pe.to
+	}
+
+	rendered := ltree.New().
+		Enumerator(transitionEnumerator).
+		Indenter(transitionIndenter).
+		EnumeratorStyle(transitionStyle).
+		ItemStyle(transitionStyle).
+		Child(children...).
+		String()
+
+	for _, line := range strings.Split(strings.TrimRight(rendered, "\n"), "\n") {
+		// lipgloss/tree emits an empty root line when the root value is ""; skip
+		// any line whose visible width is zero.
+		if lipgloss.Width(line) == 0 {
+			continue
+		}
+		t.lines = append(t.lines, line)
+	}
+	t.viewport.SetContent(wrapLines(t.lines, t.viewport.Width))
+	t.pending = nil
 	return t
 }
 
@@ -132,7 +203,7 @@ func (t TimelineTab) renderFooter() string {
 	}
 	body := "FINAL: " + stateName
 	if t.finalOutputRef != "" {
-		body += "\noutput: " + truncate(t.finalOutputRef, 60)
+		body += "\n" + extractDiffFiles(t.finalOutputRef)
 	}
 	style := FooterStyle
 	if style.Copy().GetBackground() == lipgloss.Color("") {
@@ -168,7 +239,8 @@ func (t TimelineTab) Lines() []string {
 func summarizeEvent(ev bus.Event) string {
 	switch e := ev.(type) {
 	case *bus.TaskStateChanged:
-		return fmt.Sprintf("state: %s -> %s", e.From, e.To)
+		_ = e
+		return "" // handled by flushPending as a tree block
 	case *bus.ContextBuilt:
 		return fmt.Sprintf("context built: %d bytes (manifest=%q)", e.SnapshotSize, e.ManifestRef)
 	case *bus.RouterExamining:
@@ -205,6 +277,27 @@ func summarizeEvent(ev bus.Event) string {
 		return fmt.Sprintf("orchestrator error: %s", e.Error)
 	}
 	return ""
+}
+
+// extractDiffFiles extracts the list of changed filenames from a git diff string.
+// It parses lines starting with "diff --git " and extracts the target filename (b/...).
+// If parsing fails, it returns the original diff as a fallback.
+func extractDiffFiles(diff string) string {
+	var files []string
+	for _, line := range strings.Split(diff, "\n") {
+		if strings.HasPrefix(line, "diff --git ") {
+			// "diff --git a/foo.txt b/foo.txt" -> "foo.txt"
+			parts := strings.Fields(line)
+			if len(parts) >= 4 {
+				name := strings.TrimPrefix(parts[3], "b/")
+				files = append(files, name)
+			}
+		}
+	}
+	if len(files) == 0 {
+		return diff // fallback: original if unparseable
+	}
+	return strings.Join(files, ", ")
 }
 
 // truncate clips s to at most maxLen bytes, appending an ellipsis when the

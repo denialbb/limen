@@ -247,6 +247,8 @@ func TestTabSetSizeReturnsNewValue(t *testing.T) {
 }
 
 func TestTimelineUpdateReturnsNewValue(t *testing.T) {
+	// Transitions are buffered until a non-transition event flushes them as a
+	// tree block. After the transition alone, Lines() is empty (buffered).
 	tt := tabs.NewTimelineTab().SetSize(80, 24)
 	tt2, cmd := tt.Update(tabs.EventMsg{Event: &bus.TaskStateChanged{
 		From:      state.StateCreated,
@@ -254,17 +256,33 @@ func TestTimelineUpdateReturnsNewValue(t *testing.T) {
 		Timestamp: time.Now(),
 	}})
 
-	if lines := tt2.Lines(); len(lines) != 1 {
-		t.Fatalf("returned TimelineTab Lines() = %d, want 1: %v", len(lines), lines)
-	} else if !strings.Contains(lines[0], "state:") {
-		t.Fatalf("returned TimelineTab line 0 = %q, want it to contain \"state:\"", lines[0])
+	if lines := tt2.Lines(); len(lines) != 0 {
+		t.Fatalf("transition event alone: Lines() = %d, want 0 (buffered until flush): %v", len(lines), lines)
 	}
 	if lines := tt.Lines(); len(lines) != 0 {
-		t.Fatalf("original TimelineTab Lines() = %d, want 0 (Update must not mutate the receiver): %v",
+		t.Fatalf("original TimelineTab Lines() = %d, want 0 (Update must not mutate receiver): %v",
 			len(lines), lines)
 	}
 	if cmd != nil {
 		t.Fatalf("TimelineTab.Update cmd = %v, want nil", cmd)
+	}
+
+	// A subsequent non-transition event flushes the buffer; the tree-rendered
+	// transition line must appear in Lines() before the semantic event line.
+	tt3, _ := tt2.Update(tabs.EventMsg{Event: &bus.ContextBuilt{Timestamp: time.Now()}})
+	lines := tt3.Lines()
+	if len(lines) < 2 {
+		t.Fatalf("after flush: Lines() = %d, want ≥2 (tree line + semantic line): %v", len(lines), lines)
+	}
+	found := false
+	for _, l := range lines {
+		if strings.Contains(l, "CREATED") && strings.Contains(l, "WORKER_RUNNING") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("after flush: no line contains state transition labels: %v", lines)
 	}
 }
 

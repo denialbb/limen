@@ -13,7 +13,7 @@ func setupTestRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 
-	cmd := exec.Command("git", "init")
+	cmd := exec.Command("git", "init", "-b", "main")
 	cmd.Dir = dir
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("git init failed: %v", err)
