@@ -2,7 +2,6 @@ package tabs
 
 import (
 	"fmt"
-	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -55,6 +54,9 @@ func (w WorkerTab) Update(msg tea.Msg) (WorkerTab, tea.Cmd) {
 
 // handleEvent formats and appends a worker-relevant event line. It returns
 // the modified tab value so Update can thread it back under value semantics.
+// WorkerAgentMessage is intentionally excluded here — it belongs in WorkerDetail.
+// WorkerFinished is intentionally excluded here — the status transition is
+// visible in the WorkersPanel entry (⠙ → ○ → ✓).
 func (w WorkerTab) handleEvent(ev bus.Event) WorkerTab {
 	switch e := ev.(type) {
 	case *bus.WorkerStarted:
@@ -65,23 +67,9 @@ func (w WorkerTab) handleEvent(ev bus.Event) WorkerTab {
 		appendLine(&w.lines, &w.viewport, w.viewport.Width, e.Timestamp, body)
 	case *bus.WorkerToolCall:
 		appendLine(&w.lines, &w.viewport, w.viewport.Width, e.Timestamp, formatToolCall(e.Tool, e.Args))
-	case *bus.WorkerAgentMessage:
-		var prefix string
-		if e.Kind == "thinking" {
-			prefix = "→ "
-		} else {
-			prefix = "agent: "
-		}
-		text := strings.ReplaceAll(e.Text, "\n", " ")
-		if len(text) > 200 {
-			text = text[:200] + "…"
-		}
-		appendLine(&w.lines, &w.viewport, w.viewport.Width, e.Timestamp, prefix+text)
 	case *bus.WorkerFileEdit:
 		body := fmt.Sprintf("File edit: %s (%s)", e.Path, e.Op)
 		appendLine(&w.lines, &w.viewport, w.viewport.Width, e.Timestamp, body)
-	case *bus.WorkerFinished:
-		appendLine(&w.lines, &w.viewport, w.viewport.Width, e.Timestamp, "Worker finished")
 	case *bus.ConflictDetected:
 		body := fmt.Sprintf("Conflict detected: %d region(s)", len(e.Regions))
 		appendLine(&w.lines, &w.viewport, w.viewport.Width, e.Timestamp, body)

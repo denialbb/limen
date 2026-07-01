@@ -27,8 +27,8 @@ var footerStyle = lipgloss.NewStyle().
 // ├─ / └─ connectors rather than as flat independent lines.
 type transitionEntry struct{ from, to string }
 
-// transitionStyle is the faint style used for both tree connectors and text.
-var transitionStyle = lipgloss.NewStyle().Faint(true).Foreground(lipgloss.Color("240"))
+// transitionStyle styles the state-transition tree connectors and text.
+var transitionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 
 // transitionEnumerator produces compact ├─ / └─ connectors.
 var transitionEnumerator ltree.Enumerator = func(ch ltree.Children, i int) string {
@@ -165,6 +165,7 @@ func (t TimelineTab) flushPending() TimelineTab {
 		t.lines = append(t.lines, line)
 	}
 	t.viewport.SetContent(wrapLines(t.lines, t.viewport.Width))
+	t.viewport.GotoBottom()
 	t.pending = nil
 	return t
 }
@@ -233,49 +234,22 @@ func (t TimelineTab) Lines() []string {
 	return out
 }
 
-// summarizeEvent produces a single-line summary keyed by event type. Returning
-// an empty string silently drops types not relevant to the timeline; in
-// practice every event in the taxonomy maps to a non-empty summary.
+// summarizeEvent produces a single-line summary for main milestone events only.
+// Detail-level events (tool calls, file edits, agent messages, per-criterion
+// results, router entropy) are omitted here and shown only in their specific tab.
 func summarizeEvent(ev bus.Event) string {
 	switch e := ev.(type) {
 	case *bus.TaskStateChanged:
 		_ = e
 		return "" // handled by flushPending as a tree block
 	case *bus.ContextBuilt:
-		return fmt.Sprintf("context built: %d bytes (manifest=%q)", e.SnapshotSize, e.ManifestRef)
-	case *bus.RouterExamining:
-		return fmt.Sprintf("router examining: entropy=%s", floatToText(e.Entropy))
+		return fmt.Sprintf("context built: %d bytes", e.SnapshotSize)
 	case *bus.RouterDecisionEvent:
-		return fmt.Sprintf("router decision: %s (expand=%d) — %s", e.Decision, e.ExpandCount, e.Rationale)
+		return fmt.Sprintf("router: %s — %s", e.Decision, e.Rationale)
 	case *bus.WorkerStarted:
-		return fmt.Sprintf("worker started: %s (retry=%d)", e.WorktreePath, e.Retry)
-	case *bus.WorkerToolCall:
-		return formatToolCall(e.Tool, e.Args)
-	case *bus.WorkerAgentMessage:
-		if e.Kind == "thinking" {
-			text := strings.ReplaceAll(e.Text, "\n", " ")
-			if len(text) > 80 {
-				text = text[:80] + "…"
-			}
-			return "→ " + text
-		}
-		text := strings.ReplaceAll(e.Text, "\n", " ")
-		if len(text) > 80 {
-			text = text[:80] + "…"
-		}
-		return "agent: " + text
-	case *bus.WorkerFileEdit:
-		return fmt.Sprintf("file edit: %s (%s)", e.Path, e.Op)
+		return fmt.Sprintf("worker started (retry=%d)", e.Retry)
 	case *bus.WorkerFinished:
 		return "worker finished"
-	case *bus.ValidatorExamining:
-		return fmt.Sprintf("validator examining: %d criteria", len(e.Criteria))
-	case *bus.ValidatorCriterionResult:
-		verdict := "FAIL"
-		if e.Passed {
-			verdict = "PASS"
-		}
-		return fmt.Sprintf("criterion %q: %s", e.Criterion, verdict)
 	case *bus.ValidatorVerdict:
 		v := "FAIL"
 		if e.Passes {

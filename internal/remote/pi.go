@@ -53,9 +53,9 @@ func (w *piWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *gi
 	if err != nil {
 		return fmt.Errorf("piworker: stdout pipe: %w", err)
 	}
-	cmd.Stderr = os.Stderr
-
 	// Tee Pi's stdout to the log file so raw RPC events are captured for debugging.
+	// Pi's stderr also goes to the log file (not os.Stderr) so it doesn't bleed
+	// through the alt screen TUI and corrupt the display.
 	var reader io.Reader = stdout
 	if w.opts.logDir != "" {
 		logPath := filepath.Join(w.opts.logDir, fmt.Sprintf("%s-worker.log", task.ID))
@@ -63,8 +63,12 @@ func (w *piWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *gi
 			if f, err2 := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err2 == nil {
 				defer f.Close()
 				reader = io.TeeReader(stdout, f)
+				cmd.Stderr = f
 			}
 		}
+	}
+	if cmd.Stderr == nil {
+		cmd.Stderr = io.Discard
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -79,8 +83,11 @@ func (w *piWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *gi
 
 	if em != nil {
 		em.Publish(&bus.WorkerStarted{
-			TaskID:    task.ID,
-			Timestamp: time.Now(),
+			TaskID:       task.ID,
+			WorktreePath: wt.Path,
+			BaseCommit:   wt.BaseCommit,
+			Retry:        task.RetryCount,
+			Timestamp:    time.Now(),
 		})
 	}
 

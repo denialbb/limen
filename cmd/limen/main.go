@@ -457,22 +457,25 @@ func runTaskInteractive(taskID, prompt, dbPath, repoPath string, mock bool, mock
 		eventBus.Close()
 	}()
 
-	program := tea.NewProgram(model)
-	finalModel, err := program.Run()
-	cancel()  // signal the orchestrator to stop on early quit
-	wg.Wait() // let it clean up (DestroyWorktree) before exiting
-	if err != nil {
+	// Silence log output while the TUI owns the terminal. log.Printf writes to
+	// stderr which bleeds through the alt screen and corrupts the display.
+	// Redirect to the log directory if available, otherwise discard.
+	prevLogOut := log.Writer()
+	tuiLogPath := filepath.Join(logDir, "tui.log")
+	if f, ferr := os.OpenFile(tuiLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); ferr == nil {
+		log.SetOutput(f)
+		defer func() { log.SetOutput(prevLogOut); f.Close() }()
+	} else {
+		log.SetOutput(io.Discard)
+		defer log.SetOutput(prevLogOut)
+	}
+
+	program := tea.NewProgram(model, tea.WithAltScreen())
+	if _, err = program.Run(); err != nil {
 		log.Fatalf("TUI exited with error: %v", err)
 	}
-
-	// Clear screen and return to normal terminal state
-	clearCmd := exec.Command("clear")
-	clearCmd.Stdout = os.Stdout
-	_ = clearCmd.Run()
-
-	if m, ok := finalModel.(tui.Model); ok {
-		fmt.Fprintln(os.Stdout, m.String())
-	}
+	cancel()  // signal the orchestrator to stop on early quit
+	wg.Wait() // let it clean up (DestroyWorktree) before exiting
 }
 
 // runTaskWithConfig executes the orchestrator in log-style (non-TUI) mode.

@@ -424,6 +424,23 @@ func (m Model) handleBusEvent(msg busEventMsg) (tea.Model, tea.Cmd) {
 		m.workerDetail = m.workerDetail.SetWorker(m.currentWorkerID)
 		tabToFlash = int(tabWorker)
 
+	case *bus.WorkerAgentMessage:
+		if m.currentWorkerID != "" {
+			prefix := "agent: "
+			if ev.Kind == "thinking" {
+				prefix = "→ "
+			}
+			text := strings.TrimSpace(strings.ReplaceAll(ev.Text, "\n", " "))
+			var line string
+			if tabs.EventFormatter != nil {
+				line = tabs.EventFormatter(ev.Time(), prefix+text)
+			} else {
+				line = "[" + ev.Time().Format("15:04:05") + "] " + prefix + text
+			}
+			m.workerDetail = m.workerDetail.AppendLine(m.currentWorkerID, line)
+		}
+		tabToFlash = int(tabWorker)
+
 	case *bus.WorkerToolCall:
 		m.worker, _ = m.worker.Update(tabs.EventMsg{Event: ev})
 		if m.currentWorkerID != "" {

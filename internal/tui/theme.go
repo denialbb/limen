@@ -191,7 +191,7 @@ func (t *Theme) FormatEventLine(ts time.Time, body string) string {
 }
 
 // package-level theme singleton used by header, tab, and model.
-var theme = NewTheme()
+var theme = NewTerminalTheme()
 
 func init() {
 	tabs.EventFormatter = theme.FormatEventLine

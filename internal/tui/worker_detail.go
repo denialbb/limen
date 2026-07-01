@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/viewport"
@@ -95,14 +96,27 @@ func (d WorkerDetail) View() string {
 	return d.viewport.View()
 }
 
-// wrapDetailLines wraps each line to width for viewport rendering.
+var detailAnsiEscape = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+// wrapDetailLines wraps each line to width for viewport rendering, applying a
+// hanging indent to continuation lines so wrapped text aligns under the body
+// (past the "[HH:MM:SS] " timestamp prefix).
 func wrapDetailLines(lines []string, width int) string {
 	if width <= 0 {
 		return strings.Join(lines, "\n")
 	}
+	const hangIndent = 11 // len("[HH:MM:SS] ")
+	indent := strings.Repeat(" ", hangIndent)
 	wrapped := make([]string, len(lines))
 	for i, line := range lines {
-		wrapped[i] = lipgloss.NewStyle().Width(width).Render(line)
+		rendered := lipgloss.NewStyle().Width(width).Render(line)
+		parts := strings.Split(rendered, "\n")
+		if len(parts) > 1 && strings.HasPrefix(detailAnsiEscape.ReplaceAllString(line, ""), "[") {
+			for j := 1; j < len(parts); j++ {
+				parts[j] = indent + strings.TrimLeft(parts[j], " ")
+			}
+		}
+		wrapped[i] = strings.Join(parts, "\n")
 	}
 	return strings.Join(wrapped, "\n")
 }

@@ -6,10 +6,12 @@ package tabs
 
 import (
 	"encoding/json"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/denialbb/limen/internal/bus"
 )
@@ -32,8 +34,8 @@ var FooterStyle lipgloss.Style
 const timestampFormat = "15:04:05"
 
 // appendLine is a small helper shared by tabs to push a new line into the
-// accumulated output and refresh the viewport content.
-func appendLine(lines *[]string, vp lineSetter, vpWidth int, ts time.Time, body string) {
+// accumulated output, refresh the viewport content, and scroll to the bottom.
+func appendLine(lines *[]string, vp *viewport.Model, vpWidth int, ts time.Time, body string) {
 	var styled string
 	if EventFormatter != nil {
 		styled = EventFormatter(ts, body)
@@ -42,25 +44,33 @@ func appendLine(lines *[]string, vp lineSetter, vpWidth int, ts time.Time, body 
 	}
 	*lines = append(*lines, styled)
 	vp.SetContent(wrapLines(*lines, vpWidth))
+	vp.GotoBottom()
 }
 
-// wrapLines wraps each line in lines to the specified width using lipgloss.
+// ansiEscape matches ANSI SGR escape sequences for stripping color codes.
+var ansiEscape = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+// wrapLines wraps each line to the specified width using lipgloss, then adds a
+// hanging indent (equal to the visible timestamp prefix "[HH:MM:SS] " = 11
+// chars) to continuation lines so wrapped text aligns with the body text.
 func wrapLines(lines []string, width int) string {
 	if width <= 0 {
 		return strings.Join(lines, "\n")
 	}
-	var wrapped []string
+	const hangIndent = 11 // len("[HH:MM:SS] ")
+	indent := strings.Repeat(" ", hangIndent)
+	var result []string
 	for _, line := range lines {
-		wrapped = append(wrapped, lipgloss.NewStyle().Width(width).Render(line))
+		rendered := lipgloss.NewStyle().Width(width).Render(line)
+		parts := strings.Split(rendered, "\n")
+		if len(parts) > 1 && strings.HasPrefix(ansiEscape.ReplaceAllString(line, ""), "[") {
+			for i := 1; i < len(parts); i++ {
+				parts[i] = indent + strings.TrimLeft(parts[i], " ")
+			}
+		}
+		result = append(result, strings.Join(parts, "\n"))
 	}
-	return strings.Join(wrapped, "\n")
-}
-
-// lineSetter is the narrow interface tabs require from their viewport so the
-// helper can stay decoupled from the bubbles viewport type. Viewport.SetContent
-// has a pointer receiver, so callers pass &tab.viewport.
-type lineSetter interface {
-	SetContent(string)
+	return strings.Join(result, "\n")
 }
 
 // floatToText renders a float64 in a compact, fixed-point form suitable for
