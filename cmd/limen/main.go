@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -351,6 +352,8 @@ func runTaskInteractive(taskID, prompt, dbPath, repoPath string, mock bool, mock
 	}
 	defer store.Close()
 
+	_ = registerDBPath(taskID, dbPath)
+
 	manager := git.NewWorktreeManager(repoPath, "main")
 
 	worktreeRoot, err := filepath.Abs(filepath.Join(repoPath, ".limen", "worktrees"))
@@ -464,6 +467,8 @@ func runTaskWithConfig(taskID, prompt, dbPath, repoPath string, mock bool, mockT
 		log.Fatalf("Failed to initialize SQLite store: %v", err)
 	}
 	defer store.Close()
+
+	_ = registerDBPath(taskID, dbPath)
 
 	manager := git.NewWorktreeManager(repoPath, "main")
 
@@ -583,7 +588,7 @@ func runTaskCmd() {
 func runReadyForReviewCmd() {
 	flags := flag.NewFlagSet("ready-for-review", flag.ExitOnError)
 	taskID := flags.String("task-id", "", "The ID of the task")
-	dbPath := flags.String("db-path", "limen.db", "Path to the SQLite database")
+	dbPath := flags.String("db-path", "", "Path to the SQLite database")
 	summary := flags.String("summary", "", "Summary of the changes ready for review")
 
 	if err := flags.Parse(os.Args[2:]); err != nil {
@@ -595,6 +600,16 @@ func runReadyForReviewCmd() {
 		fmt.Fprintf(os.Stderr, "--task-id and --summary are required\n")
 		flags.Usage()
 		os.Exit(1)
+	}
+
+	if *dbPath == "" {
+		if path, err := getRegisteredDBPath(*taskID); err == nil && path != "" {
+			*dbPath = path
+		} else if repoRoot, err := findGitCommonDir(); err == nil {
+			*dbPath = filepath.Join(repoRoot, "limen.db")
+		} else {
+			*dbPath = "limen.db"
+		}
 	}
 
 	store, err := state.NewSQLiteStore(*dbPath)
@@ -624,7 +639,7 @@ func runReadyForReviewCmd() {
 func runSubmitVerdictCmd() {
 	flags := flag.NewFlagSet("submit-verdict", flag.ExitOnError)
 	taskID := flags.String("task-id", "", "The ID of the task")
-	dbPath := flags.String("db-path", "limen.db", "Path to the SQLite database")
+	dbPath := flags.String("db-path", "", "Path to the SQLite database")
 	passes := flags.Bool("passes", false, "Whether the solution passes validation")
 	feedback := flags.String("feedback", "", "Validation feedback")
 
@@ -637,6 +652,16 @@ func runSubmitVerdictCmd() {
 		fmt.Fprintf(os.Stderr, "--task-id and --feedback are required\n")
 		flags.Usage()
 		os.Exit(1)
+	}
+
+	if *dbPath == "" {
+		if path, err := getRegisteredDBPath(*taskID); err == nil && path != "" {
+			*dbPath = path
+		} else if repoRoot, err := findGitCommonDir(); err == nil {
+			*dbPath = filepath.Join(repoRoot, "limen.db")
+		} else {
+			*dbPath = "limen.db"
+		}
 	}
 
 	store, err := state.NewSQLiteStore(*dbPath)
@@ -662,5 +687,98 @@ func runSubmitVerdictCmd() {
 	} else {
 		log.Printf("No pending callback found for task %s", *taskID)
 	}
+}
+
+func registerDBPath(taskID, dbPath string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(home, ".limen")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	absDBPath, err := filepath.Abs(dbPath)
+	if err != nil {
+		absDBPath = dbPath
+	}
+
+	registryPath := filepath.Join(dir, "tasks.json")
+
+	var registry map[string]string
+	for i := 0; i < 5; i++ {
+		registry = make(map[string]string)
+		data, err := os.ReadFile(registryPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		if err := json.Unmarshal(data, &registry); err != nil {
+			break
+		}
+		break
+	}
+
+	registry[taskID] = absDBPath
+
+	updatedData, err := json.MarshalIndent(registry, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	tmpFile := filepath.Join(dir, fmt.Sprintf("tasks.json.%d.tmp", time.Now().UnixNano()))
+	if err := os.WriteFile(tmpFile, updatedData, 0644); err != nil {
+		return err
+	}
+	defer os.Remove(tmpFile)
+
+	return os.Rename(tmpFile, registryPath)
+}
+
+func getRegisteredDBPath(taskID string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	registryPath := filepath.Join(home, ".limen", "tasks.json")
+	data, err := os.ReadFile(registryPath)
+	if err != nil {
+		return "", err
+	}
+	var registry map[string]string
+	if err := json.Unmarshal(data, &registry); err != nil {
+		return "", err
+	}
+	path, ok := registry[taskID]
+	if !ok {
+		return "", fmt.Errorf("task ID %s not found in registry", taskID)
+	}
+	return path, nil
+}
+
+func findGitCommonDir() (string, error) {
+	cmd := exec.Command("git", "rev-parse", "--git-common-dir")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	gitCommonDir := strings.TrimSpace(string(out))
+	if gitCommonDir == "" {
+		return "", fmt.Errorf("empty git-common-dir")
+	}
+	if !filepath.IsAbs(gitCommonDir) {
+		absGitCommonDir, err := filepath.Abs(gitCommonDir)
+		if err != nil {
+			return "", err
+		}
+		gitCommonDir = absGitCommonDir
+	}
+	if filepath.Base(gitCommonDir) == ".git" {
+		return filepath.Dir(gitCommonDir), nil
+	}
+	return filepath.Dir(filepath.Dir(gitCommonDir)), nil
 }
 
