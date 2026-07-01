@@ -1,7 +1,9 @@
 package state
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 )
 
 // TaskState represents the lifecycle state of a task in the Limen orchestration engine.
@@ -47,6 +49,27 @@ type ToolCall struct {
 	Response string
 }
 
+// Verdict is the validation handshake exchanged across the process boundary:
+// the Go Core writes it, and the agent reads it on stdout.
+type Verdict struct {
+	Passes   bool   `json:"passes"`
+	Feedback string `json:"feedback"`
+}
+
+// Marshal renders the verdict as the wire JSON the agent consumes.
+func (v Verdict) Marshal() []byte {
+	return []byte(fmt.Sprintf(`{"passes":%t,"feedback":%q}`, v.Passes, v.Feedback))
+}
+
+// UnmarshalVerdict parses a wire verdict string back into a Verdict.
+func UnmarshalVerdict(data []byte) (Verdict, error) {
+	var v Verdict
+	if err := json.Unmarshal(data, &v); err != nil {
+		return Verdict{}, err
+	}
+	return v, nil
+}
+
 // Store defines the contract for persisting and retrieving task state.
 // The Go Core is the exclusive owner of this state, utilizing SQLite.
 type Store interface {
@@ -90,7 +113,11 @@ type Store interface {
 	// TransitionAndRecordContextSnapshot transitions the task to newState and records
 	// the context snapshot in a single atomic transaction.
 	TransitionAndRecordContextSnapshot(id string, newState TaskState, snapshot string) error
+}
 
+// Signaler defines the cross-process callback signalling contract used to
+// hand off validation verdicts between the Go Core and the agent.
+type Signaler interface {
 	// WriteCallbackSignal writes a pending callback signal and returns its ID.
 	WriteCallbackSignal(taskID, summary string) (int64, error)
 

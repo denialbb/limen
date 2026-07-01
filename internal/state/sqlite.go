@@ -16,8 +16,11 @@ type SQLiteStore struct {
 	db *sql.DB
 }
 
-// Compile-time check that SQLiteStore implements Store.
-var _ Store = (*SQLiteStore)(nil)
+// Compile-time checks that SQLiteStore implements Store and Signaler.
+var (
+	_ Store    = (*SQLiteStore)(nil)
+	_ Signaler = (*SQLiteStore)(nil)
+)
 
 // NewSQLiteStore opens a SQLite database at the given DSN and initializes the schema.
 //

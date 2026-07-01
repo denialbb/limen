@@ -2,6 +2,7 @@ package state_test
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/denialbb/limen/internal/state"
@@ -599,5 +600,47 @@ func TestRecordContextSnapshot_Transactional(t *testing.T) {
 
 	if err := store.RecordContextSnapshot("nonexistent", "data"); !errors.Is(err, state.ErrTaskNotFound) {
 		t.Errorf("expected ErrTaskNotFound, got: %v", err)
+	}
+}
+
+func TestVerdictRoundTrip(t *testing.T) {
+	cases := []state.Verdict{
+		{Passes: true, Feedback: "LGTM"},
+		{Passes: false, Feedback: `needs work: "quote" and \backslash`},
+		{Passes: false, Feedback: ""},
+	}
+
+	for _, want := range cases {
+		data := want.Marshal()
+
+		// Marshal must stay byte-compatible with the legacy fmt.Sprintf wire format.
+		legacy := fmt.Sprintf(`{"passes":%t,"feedback":%q}`, want.Passes, want.Feedback)
+		if string(data) != legacy {
+			t.Fatalf("Marshal produced %q, want legacy %q", data, legacy)
+		}
+
+		got, err := state.UnmarshalVerdict(data)
+		if err != nil {
+			t.Fatalf("UnmarshalVerdict(%q) error: %v", data, err)
+		}
+		if got != want {
+			t.Fatalf("round-trip mismatch: got %+v, want %+v", got, want)
+		}
+	}
+}
+
+func TestVerdictProducersMatch(t *testing.T) {
+	passes := true
+	feedback := "identical shape"
+
+	orchestrator := state.Verdict{Passes: passes, Feedback: feedback}.Marshal()
+	cli := state.Verdict{Passes: passes, Feedback: feedback}.Marshal()
+
+	if string(orchestrator) != string(cli) {
+		t.Fatalf("producer bytes differ: %q vs %q", orchestrator, cli)
+	}
+	legacy := fmt.Sprintf(`{"passes":%t,"feedback":%q}`, passes, feedback)
+	if string(orchestrator) != legacy {
+		t.Fatalf("producer bytes %q differ from legacy %q", orchestrator, legacy)
 	}
 }

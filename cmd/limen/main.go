@@ -361,6 +361,7 @@ func runTaskInteractive(taskID, prompt, dbPath, repoPath string, mock bool, mock
 
 	orch := orchestrator.NewOrchestrator(
 		store,
+		store,
 		eventBus,
 		router,
 		retriever,
@@ -486,6 +487,7 @@ func runTaskWithConfig(taskID, prompt, dbPath, repoPath string, mock bool, mockT
 
 	orch := orchestrator.NewOrchestrator(
 		store,
+		store,
 		eventBus,
 		router,
 		retriever,
@@ -596,12 +598,16 @@ func runReadyForReviewCmd() {
 	}
 
 	for {
-		verdict, completed, err := store.PollCallbackSignal(cbID)
+		raw, completed, err := store.PollCallbackSignal(cbID)
 		if err != nil {
 			log.Fatalf("Error polling callback: %v", err)
 		}
 		if completed {
-			fmt.Println(verdict)
+			verdict, err := state.UnmarshalVerdict([]byte(raw))
+			if err != nil {
+				log.Fatalf("Error parsing verdict: %v", err)
+			}
+			fmt.Println(string(verdict.Marshal()))
 			return
 		}
 		time.Sleep(200 * time.Millisecond)
@@ -652,8 +658,8 @@ func runSubmitVerdictCmd() {
 	}
 
 	if found {
-		verdict := fmt.Sprintf(`{"passes":%t,"feedback":%q}`, *passes, *feedback)
-		if err := store.WriteCallbackVerdict(cbID, verdict); err != nil {
+		verdict := state.Verdict{Passes: *passes, Feedback: *feedback}
+		if err := store.WriteCallbackVerdict(cbID, string(verdict.Marshal())); err != nil {
 			log.Fatalf("Failed to write callback verdict: %v", err)
 		}
 	} else {

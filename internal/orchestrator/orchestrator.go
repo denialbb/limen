@@ -86,6 +86,7 @@ type Orchestrator interface {
 // OrchestratorImpl provides a concrete implementation of Orchestrator.
 type OrchestratorImpl struct {
 	store        state.Store
+	signaler     state.Signaler
 	bus          bus.EventBus
 	router       Router
 	retriever    Retriever
@@ -103,9 +104,10 @@ type OrchestratorImpl struct {
 // TaskStateChanged, ConflictDetected, and TaskFinalized events. It is also
 // passed to each cognitive component as their Emitter (EventBus is a superset
 // of EventSink), so components share the same transport as the orchestrator.
-func NewOrchestrator(store state.Store, bus bus.EventBus, router Router, retriever Retriever, worker Worker, validator Validator, git GitClient, worktreeRoot string) Orchestrator {
+func NewOrchestrator(store state.Store, signaler state.Signaler, bus bus.EventBus, router Router, retriever Retriever, worker Worker, validator Validator, git GitClient, worktreeRoot string) Orchestrator {
 	return &OrchestratorImpl{
 		store:        store,
+		signaler:     signaler,
 		bus:          bus,
 		router:       router,
 		retriever:    retriever,
@@ -309,7 +311,7 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 				wErr = err
 				break workerLoop
 			case <-time.After(200 * time.Millisecond):
-				cbID, _, found, err := o.store.GetPendingCallback(task.ID)
+				cbID, _, found, err := o.signaler.GetPendingCallback(task.ID)
 				if err == nil && found {
 					if err := o.transitionAndEmit(task.ID, state.StateAwaitingValidation, em); err != nil {
 						return err
@@ -362,8 +364,8 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 						return err
 					}
 
-					verdictStr := fmt.Sprintf(`{"passes":%t,"feedback":%q}`, passes, validationFeedback)
-					_ = o.store.WriteCallbackVerdict(cbID, verdictStr)
+					verdict := state.Verdict{Passes: passes, Feedback: validationFeedback}
+					_ = o.signaler.WriteCallbackVerdict(cbID, string(verdict.Marshal()))
 					
 					if passes {
 						if err := o.transitionAndEmit(task.ID, state.StateApproved, em); err != nil {

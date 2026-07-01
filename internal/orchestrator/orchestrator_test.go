@@ -237,7 +237,7 @@ func newTestOrchestrator(store state.Store, router orchestrator.Router, worker o
 // supplied bus, so tests that assert on emitted events can subscribe or
 // inspect the stream.
 func newTestOrchestratorWithBus(store state.Store, b bus.EventBus, router orchestrator.Router, worker orchestrator.Worker, validator orchestrator.Validator, gitClient orchestrator.GitClient) orchestrator.Orchestrator {
-	return orchestrator.NewOrchestrator(store, b, router, &mockRetriever{}, worker, validator, gitClient, worktreeRoot())
+	return orchestrator.NewOrchestrator(store, store.(state.Signaler), b, router, &mockRetriever{}, worker, validator, gitClient, worktreeRoot())
 }
 
 func worktreeRoot() string {
@@ -1031,7 +1031,7 @@ func TestRunTask_RecordsToolCalls(t *testing.T) {
 	validator := &mockValidator{passes: true}
 	gitClient := &mockGit{valid: true}
 
-	orch := orchestrator.NewOrchestrator(store, bus.NewChannelBus(), router, &mockRetriever{}, worker, validator, gitClient, worktreeRoot())
+	orch := orchestrator.NewOrchestrator(store, store, bus.NewChannelBus(), router, &mockRetriever{}, worker, validator, gitClient, worktreeRoot())
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
