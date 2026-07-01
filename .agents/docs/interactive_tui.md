@@ -44,7 +44,7 @@ Rationale: the interactive mode is the expected human-facing entry point; forcin
 | 9 | Persistent header | Slim status line always on top (state node + task ID + retry/expand counts + spinner). |
 | 10 | Completion behavior | Stay open for review; auto-switch to Timeline; `q` to quit. |
 | 11 | TUI library | Charmbracelet Bubble Tea + lipgloss + bubbles. |
-| 12 | Persistence | Fine-grained events are ephemeral for v1; outcomes remain in SQLite. Documented exception. |
+| 12 | Persistence | Fine-grained streams stay ephemeral by principle; outcomes remain in SQLite. |
 
 ## Architecture
 
@@ -189,11 +189,11 @@ If stdout is not a TTY, the Bubble Tea render is skipped and events are emitted 
 
 The Python stdout reader and the orchestrator goroutine publish events to the bus. The TUI pumps events into `tea.Msg` values via a `tea.Cmd`; model state is never touched from a raw goroutine.
 
-## Persistence Exception (v1)
+## Persistence Exception
 
-The `determinism_boundary.md` §1 contract states that retrieved context and tool arguments must be reproducible. The new fine-grained streams (router reasoning traces, worker edit events, validator per-criterion results) are **not persisted in v1**; they are ephemeral, live in the TUI only, and are lost when the TUI closes.
+The `determinism_boundary.md` §1 contract states that retrieved context and tool arguments must be reproducible. The new fine-grained streams (router reasoning traces, worker edit events, validator per-criterion results) stay ephemeral by principle; they live in the TUI only, and are lost when the TUI closes.
 
-This is a deliberate, documented exception scoped to "while L1/L2/L3 are placeholders." It must be tracked with a `TODO`. The SQLite `events(task_id, seq, type, json, ts)` table lands together with the real Python clients. The existing outcome tables (`state_transitions`, `validation_decisions`, `tool_calls`, `final_output`, `context_snapshot`) remain in SQLite as today.
+The existing outcome tables (`state_transitions`, `validation_decisions`, `tool_calls`, `final_output`, `context_snapshot`) remain in SQLite as today.
 
 ## v1 De-risking Move
 
@@ -211,7 +211,7 @@ The Python L1/L2/L3 clients are still TODO stubs. The TUI ships against the exis
 
 - **New**: `internal/bus/bus.go` (interface, `ChannelBus`, event types); `internal/tui/` (model, header, `tabs/router`, `tabs/worker`, `tabs/validator`, `tabs/timeline`).
 - **Changed**: `cmd/limen/main.go` (bare `limen` dispatches to TUI; synthetic-emitting stubs); `internal/orchestrator/orchestrator.go` (widen interfaces, emit events); tests.
-- **Docs**: README diagram and `determinism_boundary.md` note for the v1 ephemeral-events exception and the interactive-mode tool-call inversion.
+- **Docs**: README diagram and `determinism_boundary.md` note for the ephemeral-events exception and the interactive-mode tool-call inversion.
 
 ## v2 Considerations (Out of Scope for v1)
 

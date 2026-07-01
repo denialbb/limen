@@ -16,8 +16,11 @@ type SQLiteStore struct {
 	db *sql.DB
 }
 
-// Compile-time check that SQLiteStore implements Store.
-var _ Store = (*SQLiteStore)(nil)
+// Compile-time checks that SQLiteStore implements Store and Signaler.
+var (
+	_ Store    = (*SQLiteStore)(nil)
+	_ Signaler = (*SQLiteStore)(nil)
+)
 
 // NewSQLiteStore opens a SQLite database at the given DSN and initializes the schema.
 //
@@ -68,7 +71,8 @@ func (s *SQLiteStore) createSchema() error {
 		max_retries INTEGER NOT NULL,
 		validation_decision TEXT,
 		final_output TEXT,
-		context_snapshot TEXT
+		context_snapshot TEXT,
+		prompt TEXT NOT NULL DEFAULT ''
 	);
 
 	CREATE TABLE IF NOT EXISTS state_transitions (
@@ -104,6 +108,18 @@ func (s *SQLiteStore) createSchema() error {
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_tool_calls_task_id ON tool_calls(task_id);
+
+	CREATE TABLE IF NOT EXISTS pending_callbacks (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		task_id TEXT NOT NULL,
+		summary TEXT NOT NULL,
+		verdict TEXT,
+		status TEXT NOT NULL DEFAULT 'PENDING',
+		created_at INTEGER NOT NULL,
+		FOREIGN KEY (task_id) REFERENCES tasks(id)
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_pending_callbacks_task_id ON pending_callbacks(task_id);
 	`
 
 	if _, err := s.db.Exec(schema); err != nil {
@@ -119,18 +135,21 @@ func (s *SQLiteStore) createSchema() error {
 		_, _ = s.db.Exec("ALTER TABLE tool_calls ADD COLUMN " + col + " TEXT NOT NULL DEFAULT ''")
 	}
 
+	// Migration for prompt column.
+	_, _ = s.db.Exec("ALTER TABLE tasks ADD COLUMN prompt TEXT NOT NULL DEFAULT ''")
+
 	return nil
 }
 
 // CreateTask initializes a task in the CREATED state.
-func (s *SQLiteStore) CreateTask(id string, maxRetries int) (*Task, error) {
+func (s *SQLiteStore) CreateTask(id string, maxRetries int, prompt string) (*Task, error) {
 	if maxRetries < 0 {
 		return nil, errors.New("max retries cannot be negative")
 	}
 
 	_, err := s.db.Exec(
-		"INSERT INTO tasks (id, current_state, retry_count, max_retries) VALUES (?, ?, ?, ?)",
-		id, StateCreated, 0, maxRetries,
+		"INSERT INTO tasks (id, current_state, retry_count, max_retries, prompt) VALUES (?, ?, ?, ?, ?)",
+		id, StateCreated, 0, maxRetries, prompt,
 	)
 	if err != nil {
 		if isUniqueConstraintError(err) {
@@ -144,6 +163,7 @@ func (s *SQLiteStore) CreateTask(id string, maxRetries int) (*Task, error) {
 		CurrentState: StateCreated,
 		RetryCount:   0,
 		MaxRetries:   maxRetries,
+		Prompt:       prompt,
 	}, nil
 }
 
@@ -153,7 +173,8 @@ func (s *SQLiteStore) GetTask(id string) (*Task, error) {
 		SELECT id, current_state, retry_count, max_retries,
 		       COALESCE(validation_decision, ''),
 		       COALESCE(final_output, ''),
-		       COALESCE(context_snapshot, '')
+		       COALESCE(context_snapshot, ''),
+		       COALESCE(prompt, '')
 		FROM tasks
 		WHERE id = ?`,
 		id,
@@ -168,6 +189,7 @@ func (s *SQLiteStore) GetTask(id string) (*Task, error) {
 		&task.ValidationDecision,
 		&task.FinalOutput,
 		&task.ContextSnapshot,
+		&task.Prompt,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrTaskNotFound
@@ -576,4 +598,76 @@ func (s *SQLiteStore) GetValidationDecisions(id string) ([]ValidationDecisionRec
 // canonical error message text as a stable fallback.
 func isUniqueConstraintError(err error) bool {
 	return strings.Contains(err.Error(), "UNIQUE constraint failed")
+}
+
+// WriteCallbackSignal writes a pending callback signal and returns its ID.
+func (s *SQLiteStore) WriteCallbackSignal(taskID, summary string) (int64, error) {
+	var dummy int
+	if err := s.db.QueryRow("SELECT 1 FROM tasks WHERE id = ?", taskID).Scan(&dummy); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, ErrTaskNotFound
+		}
+		return 0, fmt.Errorf("check task existence: %w", err)
+	}
+
+	result, err := s.db.Exec(
+		"INSERT INTO pending_callbacks (task_id, summary, status, created_at) VALUES (?, ?, 'PENDING', ?)",
+		taskID, summary, time.Now().Unix(),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("insert pending callback: %w", err)
+	}
+	return result.LastInsertId()
+}
+
+// PollCallbackSignal checks if the callback has a verdict.
+func (s *SQLiteStore) PollCallbackSignal(callbackID int64) (string, bool, error) {
+	var status string
+	var verdict sql.NullString
+	if err := s.db.QueryRow("SELECT status, verdict FROM pending_callbacks WHERE id = ?", callbackID).Scan(&status, &verdict); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", false, fmt.Errorf("callback not found")
+		}
+		return "", false, fmt.Errorf("query callback: %w", err)
+	}
+
+	if status == "COMPLETED" {
+		return verdict.String, true, nil
+	}
+	return "", false, nil
+}
+
+// GetPendingCallback retrieves a pending callback for a task.
+func (s *SQLiteStore) GetPendingCallback(taskID string) (int64, string, bool, error) {
+	var id int64
+	var summary string
+	if err := s.db.QueryRow(
+		"SELECT id, summary FROM pending_callbacks WHERE task_id = ? AND status = 'PENDING' ORDER BY id ASC LIMIT 1",
+		taskID,
+	).Scan(&id, &summary); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, "", false, nil
+		}
+		return 0, "", false, fmt.Errorf("query pending callback: %w", err)
+	}
+	return id, summary, true, nil
+}
+
+// WriteCallbackVerdict writes the verdict for a pending callback, marking it completed.
+func (s *SQLiteStore) WriteCallbackVerdict(callbackID int64, verdict string) error {
+	res, err := s.db.Exec(
+		"UPDATE pending_callbacks SET status = 'COMPLETED', verdict = ? WHERE id = ?",
+		verdict, callbackID,
+	)
+	if err != nil {
+		return fmt.Errorf("update callback verdict: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check rows affected: %w", err)
+	}
+	if affected == 0 {
+		return fmt.Errorf("callback not found or already completed")
+	}
+	return nil
 }

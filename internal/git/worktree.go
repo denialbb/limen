@@ -34,6 +34,9 @@ type ConflictRegion struct {
 
 // WorktreeManager defines the contract for managing ephemeral Git worktrees.
 type WorktreeManager interface {
+	// IsValid reports whether the repository is in a valid state for operations:
+	// it is inside a git worktree, has no uncommitted tracked changes, and passes fsck.
+	IsValid(ctx context.Context) (bool, error)
 	// ProvisionWorktree creates an isolated environment via `git worktree add`.
 	ProvisionWorktree(ctx context.Context, baseCommit, branchName, path string) (*Worktree, error)
 	// CheckForConflicts detects if the worker's uncommitted patch conflicts with the canonical branch.
@@ -46,6 +49,8 @@ type WorktreeManager interface {
 	DestroyWorktree(ctx context.Context, wt *Worktree) error
 	// GetWorktreeDiff returns the worker's uncommitted changes relative to HEAD.
 	GetWorktreeDiff(ctx context.Context, wt *Worktree) (string, error)
+	// ProvisionThrowawayWorktree creates a detached worktree with the given patch applied.
+	ProvisionThrowawayWorktree(ctx context.Context, patch string) (*Worktree, error)
 }
 
 type worktreeManagerImpl struct {
@@ -63,6 +68,34 @@ func NewWorktreeManager(repoPath, canonicalBranch string) WorktreeManager {
 		repoPath:        repoPath,
 		canonicalBranch: canonicalBranch,
 	}
+}
+
+// IsValid verifies the repository is inside a git worktree and has no uncommitted
+// changes or known integrity issues.
+func (m *worktreeManagerImpl) IsValid(ctx context.Context) (bool, error) {
+	cmdDir := exec.CommandContext(ctx, "git", "rev-parse", "--git-dir")
+	cmdDir.Dir = m.repoPath
+	if out, err := cmdDir.CombinedOutput(); err != nil {
+		return false, fmt.Errorf("not a git repository: %w, output: %s", err, string(out))
+	}
+
+	cmdStatus := exec.CommandContext(ctx, "git", "status", "--porcelain", "--untracked-files=no")
+	cmdStatus.Dir = m.repoPath
+	out, err := cmdStatus.Output()
+	if err != nil {
+		return false, fmt.Errorf("git status failed: %w", err)
+	}
+	if strings.TrimSpace(string(out)) != "" {
+		return false, nil
+	}
+
+	cmdFsck := exec.CommandContext(ctx, "git", "fsck", "--full")
+	cmdFsck.Dir = m.repoPath
+	if err := cmdFsck.Run(); err != nil {
+		return false, nil
+	}
+
+	return true, nil
 }
 
 // ProvisionWorktree creates an isolated environment via `git worktree add`.
@@ -137,6 +170,30 @@ func (m *worktreeManagerImpl) provisionTempWorktree(ctx context.Context, commit 
 		return "", fmt.Errorf("git worktree add detached failed: %w, output: %s", err, string(out))
 	}
 	return tempDir, nil
+}
+
+// ProvisionThrowawayWorktree creates a detached worktree with the given patch applied.
+func (m *worktreeManagerImpl) ProvisionThrowawayWorktree(ctx context.Context, patch string) (*Worktree, error) {
+	tempDir, err := m.provisionTempWorktree(ctx, m.canonicalBranch)
+	if err != nil {
+		return nil, err
+	}
+
+	if strings.TrimSpace(patch) != "" {
+		applyCmd := exec.CommandContext(ctx, "git", "apply")
+		applyCmd.Dir = tempDir
+		applyCmd.Stdin = strings.NewReader(patch)
+		if out, err := applyCmd.CombinedOutput(); err != nil {
+			m.removeTempWorktree(ctx, tempDir)
+			return nil, fmt.Errorf("apply worker diff failed: %w, output: %s", err, string(out))
+		}
+	}
+
+	return &Worktree{
+		Path:       tempDir,
+		Branch:     "",
+		BaseCommit: m.canonicalBranch,
+	}, nil
 }
 
 // removeTempWorktree force-removes a temporary worktree.

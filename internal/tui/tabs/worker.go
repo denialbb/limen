@@ -54,6 +54,9 @@ func (w WorkerTab) Update(msg tea.Msg) (WorkerTab, tea.Cmd) {
 
 // handleEvent formats and appends a worker-relevant event line. It returns
 // the modified tab value so Update can thread it back under value semantics.
+// WorkerAgentMessage is intentionally excluded here — it belongs in WorkerDetail.
+// WorkerFinished is intentionally excluded here — the status transition is
+// visible in the WorkersPanel entry (⠙ → ○ → ✓).
 func (w WorkerTab) handleEvent(ev bus.Event) WorkerTab {
 	switch e := ev.(type) {
 	case *bus.WorkerStarted:
@@ -63,12 +66,10 @@ func (w WorkerTab) handleEvent(ev bus.Event) WorkerTab {
 		)
 		appendLine(&w.lines, &w.viewport, w.viewport.Width, e.Timestamp, body)
 	case *bus.WorkerToolCall:
-		appendLine(&w.lines, &w.viewport, w.viewport.Width, e.Timestamp, "Tool call: "+e.Tool)
+		appendLine(&w.lines, &w.viewport, w.viewport.Width, e.Timestamp, formatToolCall(e.Tool, e.Args))
 	case *bus.WorkerFileEdit:
 		body := fmt.Sprintf("File edit: %s (%s)", e.Path, e.Op)
 		appendLine(&w.lines, &w.viewport, w.viewport.Width, e.Timestamp, body)
-	case *bus.WorkerFinished:
-		appendLine(&w.lines, &w.viewport, w.viewport.Width, e.Timestamp, "Worker finished")
 	case *bus.ConflictDetected:
 		body := fmt.Sprintf("Conflict detected: %d region(s)", len(e.Regions))
 		appendLine(&w.lines, &w.viewport, w.viewport.Width, e.Timestamp, body)

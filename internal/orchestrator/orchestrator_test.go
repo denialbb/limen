@@ -3,7 +3,10 @@ package orchestrator_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,11 +32,11 @@ type mockStore struct {
 	tasks map[string]*state.Task
 }
 
-func (m *mockStore) CreateTask(id string, maxRetries int) (*state.Task, error) {
+func (m *mockStore) CreateTask(id string, maxRetries int, prompt string) (*state.Task, error) {
 	if _, exists := m.tasks[id]; exists {
 		return nil, state.ErrTaskAlreadyExists
 	}
-	t := &state.Task{ID: id, CurrentState: state.StateCreated, MaxRetries: maxRetries}
+	t := &state.Task{ID: id, CurrentState: state.StateCreated, MaxRetries: maxRetries, Prompt: prompt}
 	m.tasks[id] = t
 	return t, nil
 }
@@ -84,6 +87,22 @@ func (m *mockStore) RecordToolCall(id, call, args, response string) error {
 
 func (m *mockStore) GetToolCalls(id string) ([]state.ToolCall, error) {
 	return nil, nil
+}
+
+func (m *mockStore) WriteCallbackSignal(taskID, summary string) (int64, error) {
+	return 1, nil
+}
+
+func (m *mockStore) PollCallbackSignal(callbackID int64) (string, bool, error) {
+	return "", false, nil
+}
+
+func (m *mockStore) GetPendingCallback(taskID string) (int64, string, bool, error) {
+	return 0, "", false, nil
+}
+
+func (m *mockStore) WriteCallbackVerdict(callbackID int64, verdict string) error {
+	return nil
 }
 
 // recordingMockStore wraps a mockStore and records tool-call invocations.
@@ -186,6 +205,10 @@ func (m *mockGit) ProvisionWorktree(ctx context.Context, baseCommit, branchName,
 	return &git.Worktree{Path: path, Branch: branchName, BaseCommit: baseCommit}, nil
 }
 
+func (m *mockGit) ProvisionThrowawayWorktree(ctx context.Context, patch string) (*git.Worktree, error) {
+	return &git.Worktree{Path: "/tmp/mock-throwaway", Branch: "", BaseCommit: "mock-base"}, nil
+}
+
 func (m *mockGit) CommitWorktree(ctx context.Context, taskID string, wt *git.Worktree) error {
 	return nil
 }
@@ -214,7 +237,7 @@ func newTestOrchestrator(store state.Store, router orchestrator.Router, worker o
 // supplied bus, so tests that assert on emitted events can subscribe or
 // inspect the stream.
 func newTestOrchestratorWithBus(store state.Store, b bus.EventBus, router orchestrator.Router, worker orchestrator.Worker, validator orchestrator.Validator, gitClient orchestrator.GitClient) orchestrator.Orchestrator {
-	return orchestrator.NewOrchestrator(store, b, router, &mockRetriever{}, worker, validator, gitClient, worktreeRoot())
+	return orchestrator.NewOrchestrator(store, store.(state.Signaler), b, router, &mockRetriever{}, worker, validator, gitClient, worktreeRoot())
 }
 
 func worktreeRoot() string {
@@ -226,7 +249,7 @@ func worktreeRoot() string {
 
 func TestRunTask_Success(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-1", 3)
+	task, _ := store.CreateTask("task-1", 3, "")
 
 	router := &mockRouter{decision: orchestrator.DecisionProceed}
 	worker := &mockWorker{}
@@ -253,7 +276,7 @@ func TestRunTask_Success(t *testing.T) {
 
 func TestRunTask_EscalateOnRouter(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-1", 3)
+	task, _ := store.CreateTask("task-1", 3, "")
 
 	router := &mockRouter{decision: orchestrator.DecisionEscalate}
 	worker := &mockWorker{}
@@ -276,7 +299,7 @@ func TestRunTask_EscalateOnRouter(t *testing.T) {
 
 func TestRunTask_ValidatorRetry(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-1", 1) // Only 1 retry allowed
+	task, _ := store.CreateTask("task-1", 1, "") // Only 1 retry allowed
 
 	router := &mockRouter{decision: orchestrator.DecisionProceed}
 	worker := &mockWorker{}
@@ -319,7 +342,7 @@ func TestRunTask_ValidatorRetry(t *testing.T) {
 
 func TestRunTask_GitInvalid(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-1", 3)
+	task, _ := store.CreateTask("task-1", 3, "")
 
 	router := &mockRouter{decision: orchestrator.DecisionProceed}
 	worker := &mockWorker{}
@@ -354,7 +377,7 @@ func TestRunTask_TaskNotFound(t *testing.T) {
 
 func TestRunTask_WorkerError(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-1", 3)
+	task, _ := store.CreateTask("task-1", 3, "")
 
 	router := &mockRouter{decision: orchestrator.DecisionProceed}
 
@@ -375,7 +398,7 @@ func TestRunTask_WorkerError(t *testing.T) {
 
 func TestRunTask_RouterExpand(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-1", 3)
+	task, _ := store.CreateTask("task-1", 3, "")
 
 	router := &mockRouter{decision: orchestrator.DecisionExpand}
 	worker := &mockWorker{}
@@ -441,7 +464,7 @@ var _ orchestrator.Worker = (*mockErrorWorker)(nil)
 
 func TestRunTask_GitError(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-1", 3)
+	task, _ := store.CreateTask("task-1", 3, "")
 
 	router := &mockRouter{decision: orchestrator.DecisionProceed}
 	worker := &mockWorker{}
@@ -460,7 +483,7 @@ func TestRunTask_GitError(t *testing.T) {
 
 func TestRunTask_RouterError(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-1", 3)
+	task, _ := store.CreateTask("task-1", 3, "")
 
 	router := &mockErrorRouter{}
 	worker := &mockWorker{}
@@ -479,7 +502,7 @@ func TestRunTask_RouterError(t *testing.T) {
 
 func TestRunTask_ValidatorError(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-1", 3)
+	task, _ := store.CreateTask("task-1", 3, "")
 
 	router := &mockRouter{decision: orchestrator.DecisionProceed}
 	worker := &mockWorker{}
@@ -498,7 +521,7 @@ func TestRunTask_ValidatorError(t *testing.T) {
 
 func TestRunTask_CommitError(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-1", 3)
+	task, _ := store.CreateTask("task-1", 3, "")
 
 	router := &mockRouter{decision: orchestrator.DecisionProceed}
 	worker := &mockWorker{}
@@ -526,6 +549,9 @@ func (m *mockGitBase) IsValid(ctx context.Context) (bool, error) {
 }
 func (m *mockGitBase) ProvisionWorktree(ctx context.Context, baseCommit, branchName, path string) (*git.Worktree, error) {
 	return &git.Worktree{Path: path, Branch: branchName, BaseCommit: baseCommit}, nil
+}
+func (m *mockGitBase) ProvisionThrowawayWorktree(ctx context.Context, patch string) (*git.Worktree, error) {
+	return &git.Worktree{Path: "/tmp/mock-throwaway", Branch: "", BaseCommit: "mock-base"}, nil
 }
 func (m *mockGitBase) CommitWorktree(ctx context.Context, taskID string, wt *git.Worktree) error {
 	return nil
@@ -583,7 +609,7 @@ var _ orchestrator.Validator = (*mockErrorValidator)(nil)
 
 func TestRunTask_ContextCancellation(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-1", 3)
+	task, _ := store.CreateTask("task-1", 3, "")
 
 	router := &mockRouter{decision: orchestrator.DecisionProceed}
 	validator := &mockValidator{passes: true}
@@ -628,7 +654,7 @@ func (m *mockGitCancel) DestroyWorktree(ctx context.Context, wt *git.Worktree) e
 
 func TestRunTask_ConflictRepairLoop(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-1", 3)
+	task, _ := store.CreateTask("task-1", 3, "")
 
 	router := &mockRouter{decision: orchestrator.DecisionProceed}
 	worker := &mockWorker{}
@@ -721,7 +747,7 @@ func findStateChange(t *testing.T, rec *bus.RecorderEmitter, from, to state.Task
 // path. Each transition must publish exactly one event with the right pair.
 func TestRunTask_EmitsTaskStateChanged(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-events-1", 3)
+	task, _ := store.CreateTask("task-events-1", 3, "")
 
 	router := &mockRouter{decision: orchestrator.DecisionProceed}
 	worker := &mockWorker{}
@@ -771,7 +797,7 @@ func TestRunTask_EmitsTaskStateChanged(t *testing.T) {
 // reference recorded as the final output.
 func TestRunTask_EmitsTaskFinalizedOnCommitted(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-finalized-1", 3)
+	task, _ := store.CreateTask("task-finalized-1", 3, "")
 
 	router := &mockRouter{decision: orchestrator.DecisionProceed}
 	worker := &mockWorker{}
@@ -798,19 +824,69 @@ func TestRunTask_EmitsTaskFinalizedOnCommitted(t *testing.T) {
 		t.Errorf("expected FinalState COMMITTED, got %s", f.FinalState)
 	}
 	if f.FinalOutputRef == "" {
-		t.Error("expected non-empty FinalOutputRef (the committed diff)")
+		t.Errorf("expected non-empty FinalOutputRef, got %q", f.FinalOutputRef)
 	}
 	if f.TaskID != task.ID {
 		t.Errorf("expected TaskID %s, got %s", task.ID, f.TaskID)
 	}
 }
 
+type mockBlockingWorker struct {
+	dbPath string
+}
+
+func (m *mockBlockingWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *git.Worktree, feedback string, em orchestrator.Emitter) error {
+	cmd := exec.CommandContext(ctx, "go", "run", "github.com/denialbb/limen/cmd/limen", "ready-for-review", "--task-id", task.ID, "--summary", "mock summary", "--db-path", m.dbPath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ready-for-review failed: %w, out: %s", err, string(out))
+	}
+	if !strings.Contains(string(out), `"passes":true`) {
+		return fmt.Errorf("unexpected verdict: %s", string(out))
+	}
+	return nil
+}
+
+func TestBlockingCallbackRoundTrip(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := state.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	task, _ := store.CreateTask("task-1", 5, "")
+
+	router := &mockRouter{decision: orchestrator.DecisionProceed}
+	worker := &mockBlockingWorker{dbPath: dbPath}
+	validator := &mockValidator{passes: true}
+	gitMock := &mockGit{valid: true}
+
+	orch := newTestOrchestrator(store, router, worker, validator, gitMock)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := orch.RunTask(ctx, task.ID); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	tTask, err := store.GetTask(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tTask.CurrentState != state.StateCommitted {
+		t.Errorf("expected state COMMITTED, got: %s", tTask.CurrentState)
+	}
+}
+
+
 // TestRunTask_EmitsTaskFinalizedOnEscalation verifies that the FAILED_ESCALATED
 // terminal state (via router Escalate) emits exactly one TaskFinalized event
 // with an empty FinalOutputRef.
 func TestRunTask_EmitsTaskFinalizedOnEscalation(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-finalized-2", 3)
+	task, _ := store.CreateTask("task-finalized-2", 3, "")
 
 	router := &mockRouter{decision: orchestrator.DecisionEscalate}
 	worker := &mockWorker{}
@@ -845,7 +921,7 @@ func TestRunTask_EmitsTaskFinalizedOnEscalation(t *testing.T) {
 // after the conflict is resolved on the retry.
 func TestRunTask_EmitsConflictDetected(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-conflict-1", 3)
+	task, _ := store.CreateTask("task-conflict-1", 3, "")
 
 	router := &mockRouter{decision: orchestrator.DecisionProceed}
 	worker := &mockWorker{}
@@ -907,7 +983,7 @@ func (m *mockGitConflictAlways) ExtractConflictRegions(ctx context.Context, wt *
 // terminates with FAILED_ESCALATED and emits exactly one TaskFinalized event.
 func TestRunTask_EmitsTaskFinalizedOnConflictExhaustion(t *testing.T) {
 	store := &mockStore{tasks: make(map[string]*state.Task)}
-	task, _ := store.CreateTask("task-conflict-exhaust-1", 1)
+	task, _ := store.CreateTask("task-conflict-exhaust-1", 1, "")
 
 	router := &mockRouter{decision: orchestrator.DecisionProceed}
 	worker := &mockWorker{}
@@ -948,14 +1024,14 @@ func TestRunTask_EmitsTaskFinalizedOnConflictExhaustion(t *testing.T) {
 // path, guarding against the lossy label-only recording fixed by BUG #1.
 func TestRunTask_RecordsToolCalls(t *testing.T) {
 	store := &recordingMockStore{mockStore: mockStore{tasks: make(map[string]*state.Task)}}
-	task, _ := store.CreateTask("task-tc-1", 3)
+	task, _ := store.CreateTask("task-tc-1", 3, "")
 
 	router := &mockRouter{decision: orchestrator.DecisionProceed}
 	worker := &mockWorker{}
 	validator := &mockValidator{passes: true}
 	gitClient := &mockGit{valid: true}
 
-	orch := orchestrator.NewOrchestrator(store, bus.NewChannelBus(), router, &mockRetriever{}, worker, validator, gitClient, worktreeRoot())
+	orch := orchestrator.NewOrchestrator(store, store, bus.NewChannelBus(), router, &mockRetriever{}, worker, validator, gitClient, worktreeRoot())
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 

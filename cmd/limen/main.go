@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -109,10 +111,52 @@ func (c *cliWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *g
 
 // cliValidator is a placeholder validator that always passes.
 // TODO: Replace with the real L3 validator.
-type cliValidator struct{}
+type cliValidator struct {
+	cmd    string
+	logDir string
+}
 
 func (v *cliValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree, em orchestrator.Emitter) (bool, string, error) {
 	log.Printf("Validator evaluating solution for task %s", task.ID)
+
+	passes := true
+	feedback := "LGTM"
+
+	if v.cmd != "" {
+		cmdParts := strings.Fields(v.cmd)
+		c := exec.CommandContext(ctx, cmdParts[0], cmdParts[1:]...)
+		c.Dir = wt.Path
+
+		var outBuf strings.Builder
+		var logFile *os.File
+		var err error
+
+		if v.logDir != "" {
+			logPath := filepath.Join(v.logDir, fmt.Sprintf("%s-validator.log", task.ID))
+			if err := os.MkdirAll(v.logDir, 0755); err == nil {
+				logFile, err = os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+			}
+		}
+
+		if logFile != nil {
+			defer logFile.Close()
+			c.Stdout = io.MultiWriter(&outBuf, logFile)
+			c.Stderr = io.MultiWriter(&outBuf, logFile)
+		} else {
+			c.Stdout = &outBuf
+			c.Stderr = &outBuf
+		}
+
+		err = c.Run()
+		out := outBuf.String()
+		if err != nil {
+			passes = false
+			feedback = fmt.Sprintf("Command %q failed:\n%s\nError: %v", v.cmd, out, err)
+		} else {
+			passes = true
+			feedback = fmt.Sprintf("Command %q passed:\n%s", v.cmd, out)
+		}
+	}
 
 	criteria := []string{"placeholder_criterion"}
 	// NOTE: Synthetic Validator taxonomy stream; the per-criterion result and
@@ -125,70 +169,17 @@ func (v *cliValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.W
 	em.Publish(&bus.ValidatorCriterionResult{
 		TaskID:    task.ID,
 		Criterion: "placeholder_criterion",
-		Passed:    true,
-		Detail:    "placeholder validator always passes",
+		Passed:    passes,
+		Detail:    feedback,
 		Timestamp: time.Now(),
 	})
 	em.Publish(&bus.ValidatorVerdict{
 		TaskID:    task.ID,
-		Passes:    true,
-		Feedback:  "LGTM",
+		Passes:    passes,
+		Feedback:  feedback,
 		Timestamp: time.Now(),
 	})
-	return true, "LGTM", nil
-}
-
-// cliGit implements the orchestrator GitClient using the real WorktreeManager.
-type cliGit struct {
-	manager    git.WorktreeManager
-	repoPath   string
-}
-
-func (c *cliGit) IsValid(ctx context.Context) (bool, error) {
-	// Pipeline gate 1: verify the repository is inside a git worktree and has no
-	// uncommitted changes or known integrity issues.
-	cmdDir := exec.CommandContext(ctx, "git", "rev-parse", "--git-dir")
-	cmdDir.Dir = c.repoPath
-	if out, err := cmdDir.CombinedOutput(); err != nil {
-		return false, fmt.Errorf("not a git repository: %w, output: %s", err, string(out))
-	}
-
-	cmdStatus := exec.CommandContext(ctx, "git", "status", "--porcelain")
-	cmdStatus.Dir = c.repoPath
-	out, err := cmdStatus.Output()
-	if err != nil {
-		return false, fmt.Errorf("git status failed: %w", err)
-	}
-	if strings.TrimSpace(string(out)) != "" {
-		return false, nil
-	}
-
-	cmdFsck := exec.CommandContext(ctx, "git", "fsck", "--full")
-	cmdFsck.Dir = c.repoPath
-	if err := cmdFsck.Run(); err != nil {
-		return false, nil
-	}
-
-	return true, nil
-}
-
-func (c *cliGit) ProvisionWorktree(ctx context.Context, baseCommit, branchName, path string) (*git.Worktree, error) {
-	return c.manager.ProvisionWorktree(ctx, baseCommit, branchName, path)
-}
-func (c *cliGit) CommitWorktree(ctx context.Context, taskID string, wt *git.Worktree) error {
-	return c.manager.CommitWorktree(ctx, taskID, wt)
-}
-func (c *cliGit) CheckForConflicts(ctx context.Context, wt *git.Worktree) (bool, error) {
-	return c.manager.CheckForConflicts(ctx, wt)
-}
-func (c *cliGit) ExtractConflictRegions(ctx context.Context, wt *git.Worktree) ([]git.ConflictRegion, error) {
-	return c.manager.ExtractConflictRegions(ctx, wt)
-}
-func (c *cliGit) DestroyWorktree(ctx context.Context, wt *git.Worktree) error {
-	return c.manager.DestroyWorktree(ctx, wt)
-}
-func (c *cliGit) GetWorktreeDiff(ctx context.Context, wt *git.Worktree) (string, error) {
-	return c.manager.GetWorktreeDiff(ctx, wt)
+	return passes, feedback, nil
 }
 
 func main() {
@@ -204,6 +195,10 @@ func main() {
 	switch command {
 	case "run-task":
 		runTaskCmd()
+	case "ready-for-review":
+		runReadyForReviewCmd()
+	case "submit-verdict":
+		runSubmitVerdictCmd()
 	case "tui":
 		// NOTE: Explicit alias for the default bare invocation. Kept so that
 		// subcommand-style invocation remains available alongside the simple form.
@@ -223,9 +218,11 @@ func main() {
 func printUsage() {
 	fmt.Fprintf(os.Stderr, "Usage: limen [command] [arguments]\n")
 	fmt.Fprintf(os.Stderr, "Commands:\n")
-	fmt.Fprintf(os.Stderr, "  limen            Launch the interactive TUI (default)\n")
-	fmt.Fprintf(os.Stderr, "  limen tui        Alias for the default interactive TUI\n")
-	fmt.Fprintf(os.Stderr, "  limen run-task   Run a task through the orchestrator (one-shot)\n")
+	fmt.Fprintf(os.Stderr, "  limen                  Launch the interactive TUI (default)\n")
+	fmt.Fprintf(os.Stderr, "  limen tui              Alias for the default interactive TUI\n")
+	fmt.Fprintf(os.Stderr, "  limen run-task         Run a task through the orchestrator (one-shot)\n")
+	fmt.Fprintf(os.Stderr, "  limen ready-for-review Write a ready signal to the DB and poll for a verdict\n")
+	fmt.Fprintf(os.Stderr, "  limen submit-verdict   Record a validation verdict and unblock ready-for-review\n")
 }
 
 // runTUICmd launches the interactive terminal UI.
@@ -242,10 +239,15 @@ func printUsage() {
 func runTUICmd() {
 	tuiFlags := flag.NewFlagSet("tui", flag.ExitOnError)
 	taskID := tuiFlags.String("task-id", "", "The ID of the task to run")
-	dbPath := tuiFlags.String("db-path", "limen.db", "Path to the SQLite database")
+	prompt := tuiFlags.String("prompt", "", "The initial prompt for the task")
+	dbPath := tuiFlags.String("db-path", "", "Path to the SQLite database (default: <repo-path>/limen.db)")
 	repoPath := tuiFlags.String("repo-path", ".", "Path to the target git repository")
 	mockFlag := tuiFlags.Bool("mock", true, "Use Python mock backend for cognitive components")
 	mockTranscript := tuiFlags.String("mock-transcript", "src/limen/mock/transcripts/spike.json", "Path to the mock transcript JSON file")
+	workerBackend := tuiFlags.String("worker-backend", "pi", "Backend to use for the worker (pi, cli, mock)")
+	workerPiProvider := tuiFlags.String("worker-pi-provider", "", "Provider for the pi worker (e.g. mistral, openai)")
+	workerPiModel := tuiFlags.String("worker-pi-model", "", "Model for the pi worker (e.g. codestral-latest)")
+	validatorCmd := tuiFlags.String("validator-cmd", "", "Command to run for cli validator")
 
 	if err := tuiFlags.Parse(os.Args[2:]); err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
@@ -258,14 +260,24 @@ func runTUICmd() {
 		os.Exit(1)
 	}
 
+	if *prompt == "" {
+		fmt.Fprintf(os.Stderr, "--prompt is required\n")
+		tuiFlags.Usage()
+		os.Exit(1)
+	}
+
+	if *dbPath == "" {
+		*dbPath = filepath.Join(*repoPath, "limen.db")
+	}
+
 	if !isTTY(os.Stdout.Fd()) {
 		// NOTE: Non-interactive stdout. Fall back to the one-shot log style so
 		// pipes and CI get the same outcome reporting without ANSI pollution.
-		runTaskOneShot(*taskID, *dbPath, *repoPath, *mockFlag, *mockTranscript)
+		runTaskOneShot(*taskID, *prompt, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend, *workerPiProvider, *workerPiModel, *validatorCmd)
 		return
 	}
 
-	runTaskInteractive(*taskID, *dbPath, *repoPath, *mockFlag, *mockTranscript)
+	runTaskInteractive(*taskID, *prompt, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend, *workerPiProvider, *workerPiModel, *validatorCmd)
 }
 
 // isTTY reports whether the given file descriptor is an interactive terminal.
@@ -275,18 +287,33 @@ func isTTY(fd uintptr) bool {
 	return isatty.IsTerminal(fd) || isatty.IsCygwinTerminal(fd)
 }
 
+// detectDefaultBranch returns the symbolic HEAD branch name of the repo at
+// repoPath (typically "main" or "master"). Falls back to "main" on error.
+func detectDefaultBranch(repoPath string) string {
+	out, err := exec.Command("git", "-C", repoPath, "symbolic-ref", "--short", "HEAD").Output()
+	if err != nil {
+		return "main"
+	}
+	if b := strings.TrimSpace(string(out)); b != "" {
+		return b
+	}
+	return "main"
+}
+
 // runTaskInteractive runs the orchestrator in a goroutine and renders the
 // Bubble Tea program in the foreground. After the program exits, a single
 // final-state line is printed so scripts that parse the trailing output still
 // get the outcome.
-func runTaskInteractive(taskID, dbPath, repoPath string, mock bool, mockTranscript string) {
+func runTaskInteractive(taskID, prompt, dbPath, repoPath string, mock bool, mockTranscript string, workerBackend, workerPiProvider, workerPiModel string, validatorCmd string) {
 	store, err := state.NewSQLiteStore(dbPath)
 	if err != nil {
 		log.Fatalf("Failed to initialize SQLite store: %v", err)
 	}
 	defer store.Close()
 
-	manager := git.NewWorktreeManager(repoPath, "main")
+	_ = registerDBPath(taskID, dbPath)
+
+	manager := git.NewWorktreeManager(repoPath, detectDefaultBranch(repoPath))
 
 	worktreeRoot, err := filepath.Abs(filepath.Join(repoPath, ".limen", "worktrees"))
 	if err != nil {
@@ -304,25 +331,36 @@ func runTaskInteractive(taskID, dbPath, repoPath string, mock bool, mockTranscri
 		gitClient orchestrator.GitClient
 	)
 
-	gitClient = &cliGit{manager: manager, repoPath: repoPath}
+	gitClient = manager
+
+	logDir := filepath.Join(repoPath, ".limen", "logs")
 
 	if mock {
 		// NOTE: Wire Python mock backend adapters. Each adapter launches a
 		// single-shot `python -m limen.mock.<role>` subprocess per call and
 		// passes the transcript path as argv[1] so the mock runtime replays
 		// canned entries from the transcript file.
-		router = remote.NewRouter([]string{"python", "-m", "limen.mock.router", mockTranscript})
+		router = remote.NewRouter([]string{"python", "-m", "limen.mock.router", mockTranscript}, remote.WithLogDir(logDir))
 		retriever = &cliRetriever{}
-		worker = remote.NewWorker([]string{"python", "-m", "limen.mock.worker", mockTranscript})
-		validator = remote.NewValidator([]string{"python", "-m", "limen.mock.validator", mockTranscript}, gitClient)
+		worker = remote.NewWorker([]string{"python", "-m", "limen.mock.worker", mockTranscript}, remote.WithLogDir(logDir))
+		validator = remote.NewValidator([]string{"python", "-m", "limen.mock.validator", mockTranscript}, gitClient, remote.WithLogDir(logDir))
 	} else {
 		router = &cliRouter{}
 		retriever = &cliRetriever{}
-		worker = &cliWorker{}
-		validator = &cliValidator{}
+		if workerBackend == "pi" {
+			worker = remote.NewPiWorker(
+				remote.WithLogDir(logDir),
+				remote.WithPiProvider(workerPiProvider),
+				remote.WithPiModel(workerPiModel),
+			)
+		} else {
+			worker = &cliWorker{}
+		}
+		validator = &cliValidator{cmd: validatorCmd, logDir: logDir}
 	}
 
 	orch := orchestrator.NewOrchestrator(
+		store,
 		store,
 		eventBus,
 		router,
@@ -333,7 +371,7 @@ func runTaskInteractive(taskID, dbPath, repoPath string, mock bool, mockTranscri
 		worktreeRoot,
 	)
 
-	if _, err := store.CreateTask(taskID, 3); err != nil {
+	if _, err := store.CreateTask(taskID, 3, prompt); err != nil {
 		log.Printf("Note: failed to create task %s (it may already exist): %v", taskID, err)
 	}
 
@@ -364,17 +402,25 @@ func runTaskInteractive(taskID, dbPath, repoPath string, mock bool, mockTranscri
 		eventBus.Close()
 	}()
 
-	program := tea.NewProgram(model, tea.WithAltScreen())
-	finalModel, err := program.Run()
-	cancel()  // signal the orchestrator to stop on early quit
-	wg.Wait() // let it clean up (DestroyWorktree) before exiting
-	if err != nil {
-		log.Fatalf("TUI exited with error: %v", err)
+	// Silence log output while the TUI owns the terminal. log.Printf writes to
+	// stderr which bleeds through the alt screen and corrupts the display.
+	// Redirect to the log directory if available, otherwise discard.
+	prevLogOut := log.Writer()
+	tuiLogPath := filepath.Join(logDir, "tui.log")
+	if f, ferr := os.OpenFile(tuiLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); ferr == nil {
+		log.SetOutput(f)
+		defer func() { log.SetOutput(prevLogOut); f.Close() }()
+	} else {
+		log.SetOutput(io.Discard)
+		defer log.SetOutput(prevLogOut)
 	}
 
-	if m, ok := finalModel.(tui.Model); ok {
-		fmt.Fprintln(os.Stdout, m.String())
+	program := tea.NewProgram(model, tea.WithAltScreen())
+	if _, err = program.Run(); err != nil {
+		log.Fatalf("TUI exited with error: %v", err)
 	}
+	cancel()  // signal the orchestrator to stop on early quit
+	wg.Wait() // let it clean up (DestroyWorktree) before exiting
 }
 
 // runTaskWithConfig executes the orchestrator in log-style (non-TUI) mode.
@@ -382,14 +428,16 @@ func runTaskInteractive(taskID, dbPath, repoPath string, mock bool, mockTranscri
 // creation, RunTask execution, and final state logging. Both the explicit
 // `run-task` subcommand and the non-TTY fallback from `runTUICmd` delegate here
 // to avoid duplicating the setup and teardown logic.
-func runTaskWithConfig(taskID, dbPath, repoPath string, mock bool, mockTranscript string) {
+func runTaskWithConfig(taskID, prompt, dbPath, repoPath string, mock bool, mockTranscript string, workerBackend, workerPiProvider, workerPiModel string, validatorCmd string) {
 	store, err := state.NewSQLiteStore(dbPath)
 	if err != nil {
 		log.Fatalf("Failed to initialize SQLite store: %v", err)
 	}
 	defer store.Close()
 
-	manager := git.NewWorktreeManager(repoPath, "main")
+	_ = registerDBPath(taskID, dbPath)
+
+	manager := git.NewWorktreeManager(repoPath, detectDefaultBranch(repoPath))
 
 	worktreeRoot, err := filepath.Abs(filepath.Join(repoPath, ".limen", "worktrees"))
 	if err != nil {
@@ -413,21 +461,32 @@ func runTaskWithConfig(taskID, dbPath, repoPath string, mock bool, mockTranscrip
 		gitClient orchestrator.GitClient
 	)
 
-	gitClient = &cliGit{manager: manager, repoPath: repoPath}
+	gitClient = manager
+
+	logDir := filepath.Join(repoPath, ".limen", "logs")
 
 	if mock {
-		router = remote.NewRouter([]string{"python", "-m", "limen.mock.router", mockTranscript})
+		router = remote.NewRouter([]string{"python", "-m", "limen.mock.router", mockTranscript}, remote.WithLogDir(logDir))
 		retriever = &cliRetriever{}
-		worker = remote.NewWorker([]string{"python", "-m", "limen.mock.worker", mockTranscript})
-		validator = remote.NewValidator([]string{"python", "-m", "limen.mock.validator", mockTranscript}, gitClient)
+		worker = remote.NewWorker([]string{"python", "-m", "limen.mock.worker", mockTranscript}, remote.WithLogDir(logDir))
+		validator = remote.NewValidator([]string{"python", "-m", "limen.mock.validator", mockTranscript}, gitClient, remote.WithLogDir(logDir))
 	} else {
 		router = &cliRouter{}
 		retriever = &cliRetriever{}
-		worker = &cliWorker{}
-		validator = &cliValidator{}
+		if workerBackend == "pi" {
+			worker = remote.NewPiWorker(
+				remote.WithLogDir(logDir),
+				remote.WithPiProvider(workerPiProvider),
+				remote.WithPiModel(workerPiModel),
+			)
+		} else {
+			worker = &cliWorker{}
+		}
+		validator = &cliValidator{cmd: validatorCmd, logDir: logDir}
 	}
 
 	orch := orchestrator.NewOrchestrator(
+		store,
 		store,
 		eventBus,
 		router,
@@ -440,7 +499,7 @@ func runTaskWithConfig(taskID, dbPath, repoPath string, mock bool, mockTranscrip
 
 	// Ensure the task exists. This is for convenience during early development.
 	// Production may expect the task to be created by another command/API.
-	if _, err := store.CreateTask(taskID, 3); err != nil {
+	if _, err := store.CreateTask(taskID, 3, prompt); err != nil {
 		log.Printf("Note: failed to create task %s (it may already exist): %v", taskID, err)
 	}
 
@@ -459,17 +518,22 @@ func runTaskWithConfig(taskID, dbPath, repoPath string, mock bool, mockTranscrip
 
 // runTaskOneShot is the non-TTY fallback. It reuses the run-task log-style
 // output and shares the same setup path as the explicit `run-task` subcommand.
-func runTaskOneShot(taskID, dbPath, repoPath string, mock bool, mockTranscript string) {
-	runTaskWithConfig(taskID, dbPath, repoPath, mock, mockTranscript)
+func runTaskOneShot(taskID, prompt, dbPath, repoPath string, mock bool, mockTranscript string, workerBackend, workerPiProvider, workerPiModel string, validatorCmd string) {
+	runTaskWithConfig(taskID, prompt, dbPath, repoPath, mock, mockTranscript, workerBackend, workerPiProvider, workerPiModel, validatorCmd)
 }
 
 func runTaskCmd() {
 	runTaskFlags := flag.NewFlagSet("run-task", flag.ExitOnError)
 	taskID := runTaskFlags.String("task-id", "", "The ID of the task to run")
-	dbPath := runTaskFlags.String("db-path", "limen.db", "Path to the SQLite database")
+	prompt := runTaskFlags.String("prompt", "", "The initial prompt for the task")
+	dbPath := runTaskFlags.String("db-path", "", "Path to the SQLite database (default: <repo-path>/limen.db)")
 	repoPath := runTaskFlags.String("repo-path", ".", "Path to the target git repository")
 	mockFlag := runTaskFlags.Bool("mock", true, "Use Python mock backend for cognitive components")
 	mockTranscript := runTaskFlags.String("mock-transcript", "src/limen/mock/transcripts/spike.json", "Path to the mock transcript JSON file")
+	workerBackend := runTaskFlags.String("worker-backend", "pi", "Backend to use for the worker (pi, cli, mock)")
+	workerPiProvider := runTaskFlags.String("worker-pi-provider", "", "Provider for the pi worker (e.g. mistral, openai)")
+	workerPiModel := runTaskFlags.String("worker-pi-model", "", "Model for the pi worker (e.g. codestral-latest)")
+	validatorCmd := runTaskFlags.String("validator-cmd", "", "Command to run for cli validator")
 
 	if err := runTaskFlags.Parse(os.Args[2:]); err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
@@ -482,5 +546,217 @@ func runTaskCmd() {
 		os.Exit(1)
 	}
 
-	runTaskWithConfig(*taskID, *dbPath, *repoPath, *mockFlag, *mockTranscript)
+	if *prompt == "" {
+		fmt.Fprintf(os.Stderr, "--prompt is required\n")
+		runTaskFlags.Usage()
+		os.Exit(1)
+	}
+
+	if *dbPath == "" {
+		*dbPath = filepath.Join(*repoPath, "limen.db")
+	}
+
+	runTaskWithConfig(*taskID, *prompt, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend, *workerPiProvider, *workerPiModel, *validatorCmd)
 }
+
+func runReadyForReviewCmd() {
+	flags := flag.NewFlagSet("ready-for-review", flag.ExitOnError)
+	taskID := flags.String("task-id", "", "The ID of the task")
+	dbPath := flags.String("db-path", "", "Path to the SQLite database")
+	summary := flags.String("summary", "", "Summary of the changes ready for review")
+
+	if err := flags.Parse(os.Args[2:]); err != nil {
+		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
+		os.Exit(1)
+	}
+
+	if *taskID == "" || *summary == "" {
+		fmt.Fprintf(os.Stderr, "--task-id and --summary are required\n")
+		flags.Usage()
+		os.Exit(1)
+	}
+
+	if *dbPath == "" {
+		if path, err := getRegisteredDBPath(*taskID); err == nil && path != "" {
+			*dbPath = path
+		} else if repoRoot, err := findGitCommonDir(); err == nil {
+			*dbPath = filepath.Join(repoRoot, "limen.db")
+		} else {
+			*dbPath = "limen.db"
+		}
+	}
+
+	store, err := state.NewSQLiteStore(*dbPath)
+	if err != nil {
+		log.Fatalf("Failed to initialize SQLite store: %v", err)
+	}
+	defer store.Close()
+
+	cbID, err := store.WriteCallbackSignal(*taskID, *summary)
+	if err != nil {
+		log.Fatalf("Failed to write callback signal: %v", err)
+	}
+
+	for {
+		raw, completed, err := store.PollCallbackSignal(cbID)
+		if err != nil {
+			log.Fatalf("Error polling callback: %v", err)
+		}
+		if completed {
+			verdict, err := state.UnmarshalVerdict([]byte(raw))
+			if err != nil {
+				log.Fatalf("Error parsing verdict: %v", err)
+			}
+			fmt.Println(string(verdict.Marshal()))
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+func runSubmitVerdictCmd() {
+	flags := flag.NewFlagSet("submit-verdict", flag.ExitOnError)
+	taskID := flags.String("task-id", "", "The ID of the task")
+	dbPath := flags.String("db-path", "", "Path to the SQLite database")
+	passes := flags.Bool("passes", false, "Whether the solution passes validation")
+	feedback := flags.String("feedback", "", "Validation feedback")
+
+	if err := flags.Parse(os.Args[2:]); err != nil {
+		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
+		os.Exit(1)
+	}
+
+	if *taskID == "" || *feedback == "" {
+		fmt.Fprintf(os.Stderr, "--task-id and --feedback are required\n")
+		flags.Usage()
+		os.Exit(1)
+	}
+
+	if *dbPath == "" {
+		if path, err := getRegisteredDBPath(*taskID); err == nil && path != "" {
+			*dbPath = path
+		} else if repoRoot, err := findGitCommonDir(); err == nil {
+			*dbPath = filepath.Join(repoRoot, "limen.db")
+		} else {
+			*dbPath = "limen.db"
+		}
+	}
+
+	store, err := state.NewSQLiteStore(*dbPath)
+	if err != nil {
+		log.Fatalf("Failed to initialize SQLite store: %v", err)
+	}
+	defer store.Close()
+
+	if err := store.RecordValidationDecision(*taskID, *passes, *feedback); err != nil {
+		log.Fatalf("Failed to record validation decision: %v", err)
+	}
+
+	cbID, _, found, err := store.GetPendingCallback(*taskID)
+	if err != nil {
+		log.Fatalf("Error checking for pending callback: %v", err)
+	}
+
+	if found {
+		verdict := state.Verdict{Passes: *passes, Feedback: *feedback}
+		if err := store.WriteCallbackVerdict(cbID, string(verdict.Marshal())); err != nil {
+			log.Fatalf("Failed to write callback verdict: %v", err)
+		}
+	} else {
+		log.Printf("No pending callback found for task %s", *taskID)
+	}
+}
+
+func registerDBPath(taskID, dbPath string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(home, ".limen")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	absDBPath, err := filepath.Abs(dbPath)
+	if err != nil {
+		absDBPath = dbPath
+	}
+
+	registryPath := filepath.Join(dir, "tasks.json")
+
+	var registry map[string]string
+	for i := 0; i < 5; i++ {
+		registry = make(map[string]string)
+		data, err := os.ReadFile(registryPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		if err := json.Unmarshal(data, &registry); err != nil {
+			break
+		}
+		break
+	}
+
+	registry[taskID] = absDBPath
+
+	updatedData, err := json.MarshalIndent(registry, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	tmpFile := filepath.Join(dir, fmt.Sprintf("tasks.json.%d.tmp", time.Now().UnixNano()))
+	if err := os.WriteFile(tmpFile, updatedData, 0644); err != nil {
+		return err
+	}
+	defer os.Remove(tmpFile)
+
+	return os.Rename(tmpFile, registryPath)
+}
+
+func getRegisteredDBPath(taskID string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	registryPath := filepath.Join(home, ".limen", "tasks.json")
+	data, err := os.ReadFile(registryPath)
+	if err != nil {
+		return "", err
+	}
+	var registry map[string]string
+	if err := json.Unmarshal(data, &registry); err != nil {
+		return "", err
+	}
+	path, ok := registry[taskID]
+	if !ok {
+		return "", fmt.Errorf("task ID %s not found in registry", taskID)
+	}
+	return path, nil
+}
+
+func findGitCommonDir() (string, error) {
+	cmd := exec.Command("git", "rev-parse", "--git-common-dir")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	gitCommonDir := strings.TrimSpace(string(out))
+	if gitCommonDir == "" {
+		return "", fmt.Errorf("empty git-common-dir")
+	}
+	if !filepath.IsAbs(gitCommonDir) {
+		absGitCommonDir, err := filepath.Abs(gitCommonDir)
+		if err != nil {
+			return "", err
+		}
+		gitCommonDir = absGitCommonDir
+	}
+	if filepath.Base(gitCommonDir) == ".git" {
+		return filepath.Dir(gitCommonDir), nil
+	}
+	return filepath.Dir(filepath.Dir(gitCommonDir)), nil
+}
+

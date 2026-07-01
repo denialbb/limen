@@ -151,6 +151,16 @@ func (t *Theme) TabStyles() (active, inactive lipgloss.Style) {
 	return
 }
 
+// SplitDividerStyle returns a style for the vertical │ column divider.
+func (t *Theme) SplitDividerStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(t.SplitDividerColor))
+}
+
+// SplitPanelTitleStyle returns a style for split-mode panel title bars.
+func (t *Theme) SplitPanelTitleStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(t.SplitPanelTitleColor))
+}
+
 // FooterStyle returns a style for rendering the timeline completion footer.
 func (t *Theme) FooterStyle() lipgloss.Style {
 	return lipgloss.NewStyle().
@@ -160,14 +170,13 @@ func (t *Theme) FooterStyle() lipgloss.Style {
 		Padding(0, 1)
 }
 
-// SplitDividerStyle returns a style for the vertical │ column divider.
-func (t *Theme) SplitDividerStyle() lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(t.SplitDividerColor))
-}
-
-// SplitPanelTitleStyle returns a style for split-mode panel title bars.
-func (t *Theme) SplitPanelTitleStyle() lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(t.SplitPanelTitleColor))
+// HintStyle returns a style for the keybinding hint line: dim (same color as
+// timestamps) and right-aligned across the given width.
+func (t *Theme) HintStyle(width int) lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color(t.TimestampColor)).
+		Width(width).
+		Align(lipgloss.Right)
 }
 
 var allCapsRegex = regexp.MustCompile(`\b[A-Z_]{3,}\b`)
@@ -191,7 +200,7 @@ func (t *Theme) FormatEventLine(ts time.Time, body string) string {
 }
 
 // package-level theme singleton used by header, tab, and model.
-var theme = NewTheme()
+var theme = NewTerminalTheme()
 
 func init() {
 	tabs.EventFormatter = theme.FormatEventLine

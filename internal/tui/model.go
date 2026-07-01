@@ -249,7 +249,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Tab mode navigation (original behavior).
+	// Tab mode navigation.
 	switch msg.String() {
 	case "1":
 		setCurrentTab(&m, tabRouter)
@@ -424,6 +424,23 @@ func (m Model) handleBusEvent(msg busEventMsg) (tea.Model, tea.Cmd) {
 		m.workerDetail = m.workerDetail.SetWorker(m.currentWorkerID)
 		tabToFlash = int(tabWorker)
 
+	case *bus.WorkerAgentMessage:
+		if m.currentWorkerID != "" {
+			prefix := "agent: "
+			if e.Kind == "thinking" {
+				prefix = "→ "
+			}
+			text := strings.TrimSpace(strings.ReplaceAll(e.Text, "\n", " "))
+			var line string
+			if tabs.EventFormatter != nil {
+				line = tabs.EventFormatter(e.Time(), prefix+text)
+			} else {
+				line = "[" + e.Time().Format("15:04:05") + "] " + prefix + text
+			}
+			m.workerDetail = m.workerDetail.AppendLine(m.currentWorkerID, line)
+		}
+		tabToFlash = int(tabWorker)
+
 	case *bus.WorkerToolCall:
 		m.worker, _ = m.worker.Update(tabs.EventMsg{Event: e})
 		if m.currentWorkerID != "" {
@@ -538,9 +555,7 @@ func (m Model) View() string {
 	}
 	sepLine := theme.SeparatorStyle().Render(strings.Repeat(theme.SeparatorRune, sepWidth))
 
-	hint := lipgloss.NewStyle().Faint(true).Foreground(lipgloss.Color("245")).Render(
-		"  [1-4] tab  [j/k] scroll  [q] quit",
-	)
+	hint := theme.HintStyle(m.width).Render("[1-4] tab  [j/k] scroll  [q] quit")
 
 	blocks := []string{
 		m.header.View(),
@@ -612,9 +627,7 @@ func (m Model) splitView() string {
 
 	mainArea := splitColumns(leftContent, rightContent, contentH)
 
-	hint := lipgloss.NewStyle().Faint(true).Foreground(lipgloss.Color("245")).Render(
-		"  [j/k] scroll  [w] workers  [Enter] select  [Esc] back  [q] quit",
-	)
+	hint := theme.HintStyle(m.width).Render("[j/k] scroll  [w] workers  [Enter] select  [Esc] back  [q] quit")
 
 	blocks := []string{
 		m.header.View(),

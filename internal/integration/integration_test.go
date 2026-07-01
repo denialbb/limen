@@ -2,6 +2,7 @@ package integration_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -22,8 +23,17 @@ import (
 var (
 	binaryOnce  sync.Once
 	binaryPath  string
+	binaryDir   string
 	binaryErr   error
 )
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if binaryDir != "" {
+		os.RemoveAll(binaryDir)
+	}
+	os.Exit(code)
+}
 
 func setupTestRepo(t *testing.T) string {
 	t.Helper()
@@ -86,6 +96,10 @@ func (g *dummyGitClient) ProvisionWorktree(ctx context.Context, baseCommit, bran
 	return g.manager.ProvisionWorktree(ctx, baseCommit, branchName, path)
 }
 
+func (g *dummyGitClient) ProvisionThrowawayWorktree(ctx context.Context, patch string) (*git.Worktree, error) {
+	return g.manager.ProvisionThrowawayWorktree(ctx, patch)
+}
+
 func (g *dummyGitClient) CommitWorktree(ctx context.Context, taskID string, wt *git.Worktree) error {
 	return g.manager.CommitWorktree(ctx, taskID, wt)
 }
@@ -125,10 +139,10 @@ func TestFullOrchestrationCycle(t *testing.T) {
 	worktreeRoot := t.TempDir()
 	b := bus.NewChannelBus()
 	defer b.Close()
-	orch := orchestrator.NewOrchestrator(store, b, router, retriever, worker, validator, gitClient, worktreeRoot)
+	orch := orchestrator.NewOrchestrator(store, store, b, router, retriever, worker, validator, gitClient, worktreeRoot)
 
 	taskID := "task-integration-1"
-	_, err = store.CreateTask(taskID, 3)
+	_, err = store.CreateTask(taskID, 3, "")
 	if err != nil {
 		t.Fatalf("Failed to create task: %v", err)
 	}
@@ -179,10 +193,10 @@ func TestFullOrchestrationCycle_ValidatorRetry(t *testing.T) {
 	worktreeRoot := t.TempDir()
 	b := bus.NewChannelBus()
 	defer b.Close()
-	orch := orchestrator.NewOrchestrator(store, b, router, retriever, worker, validator, gitClient, worktreeRoot)
+	orch := orchestrator.NewOrchestrator(store, store, b, router, retriever, worker, validator, gitClient, worktreeRoot)
 
 	taskID := "task-integration-2"
-	_, err = store.CreateTask(taskID, 2)
+	_, err = store.CreateTask(taskID, 2, "")
 	if err != nil {
 		t.Fatalf("Failed to create task: %v", err)
 	}
@@ -208,12 +222,20 @@ func TestFullOrchestrationCycle_ValidatorRetry(t *testing.T) {
 }
 
 // buildLimenBinary compiles cmd/limen into a temp binary and returns its path.
-// The binary is built at most once per test run and cached.
+// The binary is built at most once per test run and cached. We use
+// os.MkdirTemp instead of t.TempDir because the latter is scoped to the
+// calling test; the binary must outlive all tests that share the cache.
 func buildLimenBinary(t *testing.T) string {
 	t.Helper()
 	binaryOnce.Do(func() {
 		root := repoRoot(t)
-		bin := filepath.Join(t.TempDir(), "limen")
+		dir, err := os.MkdirTemp("", "limen-test-bin-*")
+		if err != nil {
+			binaryErr = fmt.Errorf("create temp dir: %w", err)
+			return
+		}
+		binaryDir = dir
+		bin := filepath.Join(dir, "limen")
 		// NODE: Build from the repo root so module resolution finds
 		// internal packages correctly.
 		cmd := exec.Command("go", "build", "-o", bin, "./cmd/limen")
@@ -291,6 +313,7 @@ func TestEndToEndWithRealBinary(t *testing.T) {
 
 	cmd := exec.CommandContext(ctx, binaryPath, "run-task",
 		"--task-id", "spike-demo",
+		"--prompt", "test prompt",
 		"--db-path", dbPath,
 		"--repo-path", repoDir,
 		"--mock",
@@ -441,4 +464,253 @@ func getHeadCommit(t *testing.T, repoDir string) string {
 		t.Fatalf("Failed to get HEAD: %v", err)
 	}
 	return string(out)
+}
+
+func TestSubmitVerdict(t *testing.T) {
+	binaryPath := buildLimenBinary(t)
+	
+	dbDir := t.TempDir()
+	dbPath := filepath.Join(dbDir, "limen.db")
+	
+	store, err := state.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to open store: %v", err)
+	}
+	defer store.Close()
+	
+	taskID := "test-submit-verdict-task"
+	_, err = store.CreateTask(taskID, 3, "")
+	if err != nil {
+		t.Fatalf("Failed to create task: %v", err)
+	}
+	
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// 1. Run ready-for-review in background
+	readyCmd := exec.CommandContext(ctx, binaryPath, "ready-for-review",
+		"--task-id", taskID,
+		"--db-path", dbPath,
+		"--summary", "I did the work",
+	)
+	
+	// Capture stdout
+	var readyOut strings.Builder
+	readyCmd.Stdout = &readyOut
+	
+	if err := readyCmd.Start(); err != nil {
+		t.Fatalf("Failed to start ready-for-review: %v", err)
+	}
+	
+	// Wait a bit to ensure ready-for-review has written the pending callback
+	time.Sleep(500 * time.Millisecond)
+	
+	// 2. Run submit-verdict
+	submitCmd := exec.Command(binaryPath, "submit-verdict",
+		"--task-id", taskID,
+		"--db-path", dbPath,
+		"--passes=true",
+		"--feedback", "Looks great",
+	)
+	
+	submitOut, err := submitCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("submit-verdict failed: %v\nOutput: %s", err, string(submitOut))
+	}
+	
+	// 3. Wait for ready-for-review to finish
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- readyCmd.Wait()
+	}()
+	
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("ready-for-review failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("ready-for-review timed out waiting for verdict")
+	}
+	
+	// 4. Verify output
+	outputStr := strings.TrimSpace(readyOut.String())
+	if !strings.Contains(outputStr, `"passes":true`) || !strings.Contains(outputStr, `"feedback":"Looks great"`) {
+		t.Errorf("Expected output to contain verdict JSON, got: %s", outputStr)
+	}
+	
+	// 5. Verify database records
+	decisions, err := store.GetValidationDecisions(taskID)
+	if err != nil {
+		t.Fatalf("Failed to get validation decisions: %v", err)
+	}
+	if len(decisions) != 1 {
+		t.Fatalf("Expected 1 validation decision, got %d", len(decisions))
+	}
+	if !decisions[0].Pass || decisions[0].Feedback != "Looks great" {
+		t.Errorf("Unexpected validation decision values: %+v", decisions[0])
+	}
+}
+
+type debrisValidator struct {
+	passes bool
+}
+
+func (v *debrisValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree, em orchestrator.Emitter) (bool, string, error) {
+	// Write test debris to the validator's worktree.
+	err := os.WriteFile(filepath.Join(wt.Path, "debris.txt"), []byte("this is test debris"), 0644)
+	if err != nil {
+		return false, "failed to write debris", err
+	}
+	return v.passes, "debris created", nil
+}
+
+func TestValidatorThrowawayWorktree(t *testing.T) {
+	store, err := state.NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	repoDir := setupTestRepo(t)
+	manager := git.NewWorktreeManager(repoDir, "main")
+	router := &dummyRouter{}
+	retriever := &dummyRetriever{}
+	worker := &dummyWorker{} // This creates solution.txt
+	validator := &debrisValidator{passes: true}
+	gitClient := &dummyGitClient{manager: manager}
+
+	worktreeRoot := t.TempDir()
+	b := bus.NewChannelBus()
+	defer b.Close()
+	orch := orchestrator.NewOrchestrator(store, store, b, router, retriever, worker, validator, gitClient, worktreeRoot)
+
+	taskID := "task-debris"
+	_, err = store.CreateTask(taskID, 3, "")
+	if err != nil {
+		t.Fatalf("Failed to create task: %v", err)
+	}
+
+	err = orch.RunTask(context.Background(), taskID)
+	if err != nil {
+		t.Fatalf("Orchestrator run failed: %v", err)
+	}
+
+	task, err := store.GetTask(taskID)
+	if err != nil {
+		t.Fatalf("Failed to get task: %v", err)
+	}
+
+	if task.CurrentState != state.StateCommitted {
+		t.Errorf("Expected state COMMITTED, got %s", task.CurrentState)
+	}
+
+	// Check that solution.txt is in the commit, but debris.txt is not.
+	showCmd := exec.Command("git", "show", "main:solution.txt")
+	showCmd.Dir = repoDir
+	if err := showCmd.Run(); err != nil {
+		t.Errorf("Expected solution.txt to be committed: %v", err)
+	}
+
+	showCmd = exec.Command("git", "show", "main:debris.txt")
+	showCmd.Dir = repoDir
+	if err := showCmd.Run(); err == nil {
+		t.Error("Expected debris.txt NOT to be committed, but it was found")
+	}
+}
+
+func TestDBPathResolutionViaTaskID(t *testing.T) {
+	binaryPath := buildLimenBinary(t)
+	
+	// Set isolated HOME directory for test
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	
+	// Set up database in a temp directory
+	dbDir := t.TempDir()
+	dbPath := filepath.Join(dbDir, "test_resolved.db")
+	
+	store, err := state.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to open store: %v", err)
+	}
+	defer store.Close()
+	
+	taskID := "test-resolve-task"
+	_, err = store.CreateTask(taskID, 3, "")
+	if err != nil {
+		t.Fatalf("Failed to create task: %v", err)
+	}
+	
+	// Register the DB path in the registry
+	registryDir := filepath.Join(tempHome, ".limen")
+	if err := os.MkdirAll(registryDir, 0755); err != nil {
+		t.Fatalf("Failed to create registry dir: %v", err)
+	}
+	
+	absDBPath, err := filepath.Abs(dbPath)
+	if err != nil {
+		absDBPath = dbPath
+	}
+	
+	registry := map[string]string{
+		taskID: absDBPath,
+	}
+	regData, err := json.Marshal(registry)
+	if err != nil {
+		t.Fatalf("Failed to marshal registry: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(registryDir, "tasks.json"), regData, 0644); err != nil {
+		t.Fatalf("Failed to write registry: %v", err)
+	}
+	
+	// Now, run ready-for-review WITHOUT --db-path
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	
+	readyCmd := exec.CommandContext(ctx, binaryPath, "ready-for-review",
+		"--task-id", taskID,
+		"--summary", "work done",
+	)
+	var readyOut strings.Builder
+	readyCmd.Stdout = &readyOut
+	
+	if err := readyCmd.Start(); err != nil {
+		t.Fatalf("Failed to start ready-for-review: %v", err)
+	}
+	
+	// Wait a bit to ensure it has written the pending callback to the db
+	time.Sleep(500 * time.Millisecond)
+	
+	// Run submit-verdict WITHOUT --db-path
+	submitCmd := exec.Command(binaryPath, "submit-verdict",
+		"--task-id", taskID,
+		"--passes=true",
+		"--feedback", "Resolved successfully",
+	)
+	submitOut, err := submitCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("submit-verdict failed: %v\nOutput: %s", err, string(submitOut))
+	}
+	
+	// Wait for ready-for-review to finish
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- readyCmd.Wait()
+	}()
+	
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("ready-for-review failed: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("ready-for-review timed out")
+	}
+	
+	// Verify output
+	outputStr := strings.TrimSpace(readyOut.String())
+	if !strings.Contains(outputStr, `"passes":true`) || !strings.Contains(outputStr, `"feedback":"Resolved successfully"`) {
+		t.Errorf("Expected verdict JSON, got: %s", outputStr)
+	}
 }
