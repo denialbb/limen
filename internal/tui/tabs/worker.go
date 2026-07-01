@@ -2,6 +2,7 @@ package tabs
 
 import (
 	"fmt"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -63,7 +64,19 @@ func (w WorkerTab) handleEvent(ev bus.Event) WorkerTab {
 		)
 		appendLine(&w.lines, &w.viewport, w.viewport.Width, e.Timestamp, body)
 	case *bus.WorkerToolCall:
-		appendLine(&w.lines, &w.viewport, w.viewport.Width, e.Timestamp, "Tool call: "+e.Tool+" "+e.Args)
+		appendLine(&w.lines, &w.viewport, w.viewport.Width, e.Timestamp, formatToolCall(e.Tool, e.Args))
+	case *bus.WorkerAgentMessage:
+		var prefix string
+		if e.Kind == "thinking" {
+			prefix = "→ "
+		} else {
+			prefix = "agent: "
+		}
+		text := strings.ReplaceAll(e.Text, "\n", " ")
+		if len(text) > 200 {
+			text = text[:200] + "…"
+		}
+		appendLine(&w.lines, &w.viewport, w.viewport.Width, e.Timestamp, prefix+text)
 	case *bus.WorkerFileEdit:
 		body := fmt.Sprintf("File edit: %s (%s)", e.Path, e.Op)
 		appendLine(&w.lines, &w.viewport, w.viewport.Width, e.Timestamp, body)

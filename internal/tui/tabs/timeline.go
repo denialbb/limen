@@ -1,7 +1,6 @@
 package tabs
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -251,7 +250,20 @@ func summarizeEvent(ev bus.Event) string {
 	case *bus.WorkerStarted:
 		return fmt.Sprintf("worker started: %s (retry=%d)", e.WorktreePath, e.Retry)
 	case *bus.WorkerToolCall:
-		return summarizeToolCall(e.Tool, e.Args)
+		return formatToolCall(e.Tool, e.Args)
+	case *bus.WorkerAgentMessage:
+		if e.Kind == "thinking" {
+			text := strings.ReplaceAll(e.Text, "\n", " ")
+			if len(text) > 80 {
+				text = text[:80] + "…"
+			}
+			return "→ " + text
+		}
+		text := strings.ReplaceAll(e.Text, "\n", " ")
+		if len(text) > 80 {
+			text = text[:80] + "…"
+		}
+		return "agent: " + text
 	case *bus.WorkerFileEdit:
 		return fmt.Sprintf("file edit: %s (%s)", e.Path, e.Op)
 	case *bus.WorkerFinished:
@@ -299,40 +311,6 @@ func extractDiffFiles(diff string) string {
 		return diff // fallback: original if unparseable
 	}
 	return strings.Join(files, ", ")
-}
-
-// summarizeToolCall parses Pi JSON tool calls and extracts the meaningful parts.
-// Handles tool_execution_* JSON format; falls back to plain summary for non-JSON.
-func summarizeToolCall(tool string, argsJSON string) string {
-	var msg map[string]interface{}
-	if err := json.Unmarshal([]byte(argsJSON), &msg); err != nil {
-		// Fallback for non-JSON args
-		return fmt.Sprintf("tool: %s %s", tool, argsJSON)
-	}
-
-	msgType, _ := msg["type"].(string)
-	toolName, _ := msg["tool"].(string)
-
-	switch msgType {
-	case "tool_execution_start":
-		return fmt.Sprintf("tool: %s (starting)", toolName)
-	case "tool_execution_update":
-		// Extract partial result if available
-		if pr, ok := msg["partialResult"].(map[string]interface{}); ok {
-			if content, ok := pr["content"].([]interface{}); ok && len(content) > 0 {
-				return fmt.Sprintf("tool: %s (output received)", toolName)
-			}
-		}
-		return fmt.Sprintf("tool: %s (running)", toolName)
-	case "tool_execution_end":
-		// Check if there was an error
-		if isError, ok := msg["isError"].(bool); ok && isError {
-			return fmt.Sprintf("tool: %s (failed)", toolName)
-		}
-		return fmt.Sprintf("tool: %s (done)", toolName)
-	}
-
-	return fmt.Sprintf("tool: %s", toolName)
 }
 
 // truncate clips s to at most maxLen bytes, appending an ellipsis when the

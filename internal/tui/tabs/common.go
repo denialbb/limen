@@ -5,6 +5,7 @@
 package tabs
 
 import (
+	"encoding/json"
 	"strconv"
 	"strings"
 	"time"
@@ -66,4 +67,46 @@ type lineSetter interface {
 // entropy scores and similar printed metrics.
 func floatToText(f float64) string {
 	return strconv.FormatFloat(f, 'f', 3, 64)
+}
+
+// formatToolCall renders a tool call as a compact, human-readable string.
+// e.Tool is the tool name; e.Args is a JSON object of arguments.
+// Output examples: "bash: go test ./...", "read: main.go", "edit: main.go"
+func formatToolCall(tool, argsJSON string) string {
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return tool + ": " + argsJSON
+	}
+	switch tool {
+	case "bash":
+		if cmd, ok := args["command"].(string); ok {
+			cmd = strings.ReplaceAll(cmd, "\n", " ")
+			if len(cmd) > 100 {
+				cmd = cmd[:100] + "…"
+			}
+			return "bash: " + cmd
+		}
+	case "read":
+		if path, ok := args["path"].(string); ok {
+			return "read: " + path
+		}
+	case "edit":
+		if path, ok := args["path"].(string); ok {
+			return "edit: " + path
+		}
+	case "write":
+		if path, ok := args["path"].(string); ok {
+			return "write: " + path
+		}
+	}
+	// Generic fallback: tool + first string value found in args
+	for _, v := range args {
+		if s, ok := v.(string); ok {
+			if len(s) > 80 {
+				s = s[:80] + "…"
+			}
+			return tool + ": " + s
+		}
+	}
+	return tool
 }

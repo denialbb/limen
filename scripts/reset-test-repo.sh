@@ -46,6 +46,9 @@ func TestAdd(t *testing.T) {
 }
 EOF
 
+# Go module
+go mod init example.com/test-repo
+
 # Initial commit
 git add -A
 git commit -m "Initial commit with buggy add function"

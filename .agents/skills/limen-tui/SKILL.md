@@ -93,3 +93,4 @@ sleep 2
 - PNG capture requires a running X display (`$DISPLAY` set). In headless CI, skip `--png`.
 - Session name must be unique per concurrent run; pass a distinct name if running multiple tasks.
 - `tui-start.sh` kills any existing session with the same name before starting.
+- To quit the TUI from within the session, send `q`: `./scripts/tui-send.sh limen-tui "q"`. This gracefully stops the orchestrator. `tui-stop.sh` kills the tmux session but does NOT send quit to the app first — prefer `tui-send.sh q` then `tui-stop.sh` for a clean shutdown.

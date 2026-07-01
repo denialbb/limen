@@ -158,11 +158,15 @@ type Option func(*options)
 type options struct {
 	shutdownTimeout time.Duration
 	logDir          string
+	piProvider      string
+	piModel         string
 }
 
 func defaultOptions() *options {
 	return &options{
 		shutdownTimeout: DefaultShutdownTimeout,
+		piProvider:      "mistral",
+		piModel:         "codestral-latest",
 	}
 }
 
@@ -178,6 +182,24 @@ func WithShutdownTimeout(d time.Duration) Option {
 func WithLogDir(dir string) Option {
 	return func(o *options) {
 		o.logDir = dir
+	}
+}
+
+// WithPiProvider sets the --provider flag passed to the pi binary.
+func WithPiProvider(provider string) Option {
+	return func(o *options) {
+		if provider != "" {
+			o.piProvider = provider
+		}
+	}
+}
+
+// WithPiModel sets the --model flag passed to the pi binary.
+func WithPiModel(model string) Option {
+	return func(o *options) {
+		if model != "" {
+			o.piModel = model
+		}
 	}
 }
 

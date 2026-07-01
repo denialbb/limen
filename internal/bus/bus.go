@@ -300,6 +300,18 @@ type WorkerFileEdit struct {
 func (*WorkerFileEdit) kind() string { return "WorkerFileEdit" }
 func (e *WorkerFileEdit) Time() time.Time { return e.Timestamp }
 
+// WorkerAgentMessage surfaces an agent reasoning/text turn from the worker.
+// Kind is "thinking" for internal reasoning or "message" for prose output.
+type WorkerAgentMessage struct {
+	TaskID    string
+	Kind      string // "thinking" | "message"
+	Text      string
+	Timestamp time.Time
+}
+
+func (*WorkerAgentMessage) kind() string    { return "WorkerAgentMessage" }
+func (e *WorkerAgentMessage) Time() time.Time { return e.Timestamp }
+
 // WorkerFinished signals the worker completing its production pass.
 type WorkerFinished struct {
 	TaskID    string

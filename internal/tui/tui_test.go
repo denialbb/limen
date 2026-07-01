@@ -158,8 +158,8 @@ func TestEventRouting(t *testing.T) {
 	if !strings.Contains(workerLines[0], "Worker started:") {
 		t.Fatalf("worker line 0 = %q, want Worker started", workerLines[0])
 	}
-	if !strings.Contains(workerLines[1], "Tool call: write_file") {
-		t.Fatalf("worker line 1 = %q, want Tool call", workerLines[1])
+	if !strings.Contains(workerLines[1], "write_file") {
+		t.Fatalf("worker line 1 = %q, want write_file tool call", workerLines[1])
 	}
 	if !strings.Contains(workerLines[2], "File edit: x.txt") {
 		t.Fatalf("worker line 2 = %q, want File edit", workerLines[2])

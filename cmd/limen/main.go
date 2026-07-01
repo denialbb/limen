@@ -301,6 +301,8 @@ func runTUICmd() {
 	mockFlag := tuiFlags.Bool("mock", true, "Use Python mock backend for cognitive components")
 	mockTranscript := tuiFlags.String("mock-transcript", "src/limen/mock/transcripts/spike.json", "Path to the mock transcript JSON file")
 	workerBackend := tuiFlags.String("worker-backend", "pi", "Backend to use for the worker (pi, cli, mock)")
+	workerPiProvider := tuiFlags.String("worker-pi-provider", "", "Provider for the pi worker (e.g. mistral, openai)")
+	workerPiModel := tuiFlags.String("worker-pi-model", "", "Model for the pi worker (e.g. codestral-latest)")
 	validatorCmd := tuiFlags.String("validator-cmd", "", "Command to run for cli validator")
 
 	if err := tuiFlags.Parse(os.Args[2:]); err != nil {
@@ -327,11 +329,11 @@ func runTUICmd() {
 	if !isTTY(os.Stdout.Fd()) {
 		// NOTE: Non-interactive stdout. Fall back to the one-shot log style so
 		// pipes and CI get the same outcome reporting without ANSI pollution.
-		runTaskOneShot(*taskID, *prompt, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend, *validatorCmd)
+		runTaskOneShot(*taskID, *prompt, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend, *workerPiProvider, *workerPiModel, *validatorCmd)
 		return
 	}
 
-	runTaskInteractive(*taskID, *prompt, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend, *validatorCmd)
+	runTaskInteractive(*taskID, *prompt, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend, *workerPiProvider, *workerPiModel, *validatorCmd)
 }
 
 // isTTY reports whether the given file descriptor is an interactive terminal.
@@ -341,11 +343,24 @@ func isTTY(fd uintptr) bool {
 	return isatty.IsTerminal(fd) || isatty.IsCygwinTerminal(fd)
 }
 
+// detectDefaultBranch returns the symbolic HEAD branch name of the repo at
+// repoPath (typically "main" or "master"). Falls back to "main" on error.
+func detectDefaultBranch(repoPath string) string {
+	out, err := exec.Command("git", "-C", repoPath, "symbolic-ref", "--short", "HEAD").Output()
+	if err != nil {
+		return "main"
+	}
+	if b := strings.TrimSpace(string(out)); b != "" {
+		return b
+	}
+	return "main"
+}
+
 // runTaskInteractive runs the orchestrator in a goroutine and renders the
 // Bubble Tea program in the foreground. After the program exits, a single
 // final-state line is printed so scripts that parse the trailing output still
 // get the outcome.
-func runTaskInteractive(taskID, prompt, dbPath, repoPath string, mock bool, mockTranscript string, workerBackend string, validatorCmd string) {
+func runTaskInteractive(taskID, prompt, dbPath, repoPath string, mock bool, mockTranscript string, workerBackend, workerPiProvider, workerPiModel string, validatorCmd string) {
 	store, err := state.NewSQLiteStore(dbPath)
 	if err != nil {
 		log.Fatalf("Failed to initialize SQLite store: %v", err)
@@ -354,7 +369,7 @@ func runTaskInteractive(taskID, prompt, dbPath, repoPath string, mock bool, mock
 
 	_ = registerDBPath(taskID, dbPath)
 
-	manager := git.NewWorktreeManager(repoPath, "main")
+	manager := git.NewWorktreeManager(repoPath, detectDefaultBranch(repoPath))
 
 	worktreeRoot, err := filepath.Abs(filepath.Join(repoPath, ".limen", "worktrees"))
 	if err != nil {
@@ -389,7 +404,11 @@ func runTaskInteractive(taskID, prompt, dbPath, repoPath string, mock bool, mock
 		router = &cliRouter{}
 		retriever = &cliRetriever{}
 		if workerBackend == "pi" {
-			worker = remote.NewPiWorker(remote.WithLogDir(logDir))
+			worker = remote.NewPiWorker(
+				remote.WithLogDir(logDir),
+				remote.WithPiProvider(workerPiProvider),
+				remote.WithPiModel(workerPiModel),
+			)
 		} else {
 			worker = &cliWorker{}
 		}
@@ -461,7 +480,7 @@ func runTaskInteractive(taskID, prompt, dbPath, repoPath string, mock bool, mock
 // creation, RunTask execution, and final state logging. Both the explicit
 // `run-task` subcommand and the non-TTY fallback from `runTUICmd` delegate here
 // to avoid duplicating the setup and teardown logic.
-func runTaskWithConfig(taskID, prompt, dbPath, repoPath string, mock bool, mockTranscript string, workerBackend string, validatorCmd string) {
+func runTaskWithConfig(taskID, prompt, dbPath, repoPath string, mock bool, mockTranscript string, workerBackend, workerPiProvider, workerPiModel string, validatorCmd string) {
 	store, err := state.NewSQLiteStore(dbPath)
 	if err != nil {
 		log.Fatalf("Failed to initialize SQLite store: %v", err)
@@ -470,7 +489,7 @@ func runTaskWithConfig(taskID, prompt, dbPath, repoPath string, mock bool, mockT
 
 	_ = registerDBPath(taskID, dbPath)
 
-	manager := git.NewWorktreeManager(repoPath, "main")
+	manager := git.NewWorktreeManager(repoPath, detectDefaultBranch(repoPath))
 
 	worktreeRoot, err := filepath.Abs(filepath.Join(repoPath, ".limen", "worktrees"))
 	if err != nil {
@@ -507,7 +526,11 @@ func runTaskWithConfig(taskID, prompt, dbPath, repoPath string, mock bool, mockT
 		router = &cliRouter{}
 		retriever = &cliRetriever{}
 		if workerBackend == "pi" {
-			worker = remote.NewPiWorker(remote.WithLogDir(logDir))
+			worker = remote.NewPiWorker(
+				remote.WithLogDir(logDir),
+				remote.WithPiProvider(workerPiProvider),
+				remote.WithPiModel(workerPiModel),
+			)
 		} else {
 			worker = &cliWorker{}
 		}
@@ -546,8 +569,8 @@ func runTaskWithConfig(taskID, prompt, dbPath, repoPath string, mock bool, mockT
 
 // runTaskOneShot is the non-TTY fallback. It reuses the run-task log-style
 // output and shares the same setup path as the explicit `run-task` subcommand.
-func runTaskOneShot(taskID, prompt, dbPath, repoPath string, mock bool, mockTranscript string, workerBackend string, validatorCmd string) {
-	runTaskWithConfig(taskID, prompt, dbPath, repoPath, mock, mockTranscript, workerBackend, validatorCmd)
+func runTaskOneShot(taskID, prompt, dbPath, repoPath string, mock bool, mockTranscript string, workerBackend, workerPiProvider, workerPiModel string, validatorCmd string) {
+	runTaskWithConfig(taskID, prompt, dbPath, repoPath, mock, mockTranscript, workerBackend, workerPiProvider, workerPiModel, validatorCmd)
 }
 
 func runTaskCmd() {
@@ -559,6 +582,8 @@ func runTaskCmd() {
 	mockFlag := runTaskFlags.Bool("mock", true, "Use Python mock backend for cognitive components")
 	mockTranscript := runTaskFlags.String("mock-transcript", "src/limen/mock/transcripts/spike.json", "Path to the mock transcript JSON file")
 	workerBackend := runTaskFlags.String("worker-backend", "pi", "Backend to use for the worker (pi, cli, mock)")
+	workerPiProvider := runTaskFlags.String("worker-pi-provider", "", "Provider for the pi worker (e.g. mistral, openai)")
+	workerPiModel := runTaskFlags.String("worker-pi-model", "", "Model for the pi worker (e.g. codestral-latest)")
 	validatorCmd := runTaskFlags.String("validator-cmd", "", "Command to run for cli validator")
 
 	if err := runTaskFlags.Parse(os.Args[2:]); err != nil {
@@ -582,7 +607,7 @@ func runTaskCmd() {
 		*dbPath = filepath.Join(*repoPath, "limen.db")
 	}
 
-	runTaskWithConfig(*taskID, *prompt, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend, *validatorCmd)
+	runTaskWithConfig(*taskID, *prompt, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend, *workerPiProvider, *workerPiModel, *validatorCmd)
 }
 
 func runReadyForReviewCmd() {

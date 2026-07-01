@@ -2,10 +2,13 @@ package integration
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"io"
 	"os/exec"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestPiRPCHandshake(t *testing.T) {
@@ -18,8 +21,9 @@ func TestPiRPCHandshake(t *testing.T) {
 	// Create a temp directory
 	tmpDir := t.TempDir()
 
-	// Spawn pi --mode rpc
-	cmd := exec.Command("pi", "--mode", "rpc")
+	// --no-extensions disables the permission system extension so Pi does not
+	// emit interactive extension_ui_request prompts that would block the pipe.
+	cmd := exec.Command("pi", "--mode", "rpc", "--no-extensions")
 	cmd.Dir = tmpDir
 
 	stdin, err := cmd.StdinPipe()
@@ -35,6 +39,12 @@ func TestPiRPCHandshake(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Failed to start pi: %v", err)
 	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	// Close stdout pipe on context cancellation so the scanner below is
+	// unblocked even if Pi's bash children outlive the kill signal.
+	defer context.AfterFunc(ctx, func() { stdout.Close() })()
 
 	// Send a hardcoded JSONL prompt
 	prompt := map[string]interface{}{
@@ -82,11 +92,18 @@ func TestPiRPCHandshake(t *testing.T) {
 	}
 
 	if err := scanner.Err(); err != nil && err != io.EOF {
-		t.Fatalf("Error reading stdout: %v", err)
+		// Ignore closed-pipe error from our context-cancel cleanup.
+		if ctx.Err() == nil || !strings.Contains(err.Error(), "file already closed") {
+			t.Fatalf("Error reading stdout: %v", err)
+		}
 	}
 
 	if !foundAgentEnd {
-		t.Errorf("Did not receive agent_end message")
+		if ctx.Err() != nil {
+			t.Errorf("Timed out waiting for agent_end")
+		} else {
+			t.Errorf("Did not receive agent_end message")
+		}
 	}
 
 	// Clean up
