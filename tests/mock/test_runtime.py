@@ -121,13 +121,22 @@ class TestNDJSONLoop:
         rt.run_role("validator", lambda entry, _req: entry)
 
         envs = _drain(sout)
-        assert len(envs) == 1
-        env = envs[0]
-        assert env["kind"] == "event"
-        ev = env["event"]
-        assert ev["type"] == "validator.verdict"
-        assert ev["task_id"] == "task-2"
-        assert ev["payload"]["passes"] is True
+        assert len(envs) == 3
+        
+        # 1. examining
+        assert envs[0]["kind"] == "event"
+        assert envs[0]["event"]["type"] == "validator.examining"
+        assert envs[0]["event"]["payload"]["criteria"] == ["c1"]
+
+        # 2. criterion_result
+        assert envs[1]["kind"] == "event"
+        assert envs[1]["event"]["type"] == "validator.criterion_result"
+        assert envs[1]["event"]["payload"]["criterion"] == "c1"
+
+        # 3. verdict
+        assert envs[2]["kind"] == "event"
+        assert envs[2]["event"]["type"] == "validator.verdict"
+        assert envs[2]["event"]["payload"]["passes"] is True
 
     def test_worker_returns_finished_event(self):
         """Worker run_role replays tool calls, then returns finished event."""
@@ -232,27 +241,27 @@ class TestTranscriptSequencing:
     def test_second_invocation_gets_second_entry(self):
         """The 2nd call to run_role for the same role uses the 2nd transcript entry."""
         entries = [
-            {"passes": False, "feedback": "fail1", "criteria": []},
-            {"passes": True, "feedback": "pass", "criteria": []},
+            {"decision": "proceed", "rationale": "fail1", "complexity": "low"},
+            {"decision": "proceed", "rationale": "pass", "complexity": "low"},
         ]
-        t = _make_transcript("validator", entries)
+        t = _make_transcript("router", entries)
 
         # NODE: each subprocess is stateless; the attempt field from the Go
         # request serves as the 1-based transcript index.
         # Invocation 1 — attempt=1 -> entry 0 ("fail1")
         req = _line(_request_envelope("task-1", attempt=1))
         rt, sin, sout = _make_runtime(t, stdin_content=req)
-        rt.run_role("validator", lambda e, _req: e)
+        rt.run_role("router", lambda e, _req: e)
         envs1 = _drain(sout)
-        assert envs1[0]["event"]["payload"]["feedback"] == "fail1"
+        assert envs1[0]["event"]["payload"]["rationale"] == "fail1"
 
         # Invocation 2 — attempt=2 -> entry 1 ("pass")
         rt._stdin = io.StringIO(_line(_request_envelope("task-1", attempt=2)))
         sout2 = io.StringIO()
         rt._stdout = sout2
-        rt.run_role("validator", lambda e, _req: e)
+        rt.run_role("router", lambda e, _req: e)
         envs2 = _drain(sout2)
-        assert envs2[0]["event"]["payload"]["feedback"] == "pass"
+        assert envs2[0]["event"]["payload"]["rationale"] == "pass"
 
     def test_roles_are_independent(self):
         """Router and validator indices are tracked independently."""
@@ -272,7 +281,7 @@ class TestTranscriptSequencing:
         rt._stdout = sout2
         rt.run_role("validator", lambda e, _req: e)
         envs2 = _drain(sout2)
-        assert envs2[0]["event"]["payload"]["feedback"] == "v"
+        assert envs2[-1]["event"]["payload"]["feedback"] == "v"
 
 
 # ---------------------------------------------------------------------------
@@ -310,22 +319,22 @@ class TestTranscriptExhaustion:
     def test_exhaustion_does_not_silently_repeat(self):
         """Exhaustion emits error envelope, not the last entry repeated."""
         t = _make_transcript(
-            "validator", [{"passes": True, "feedback": "only", "criteria": []}]
+            "router", [{"decision": "proceed", "rationale": "only", "complexity": "low"}]
         )
 
         # First call — attempt=1 -> index 0, succeeds.
         req1 = _line(_request_envelope("task-1", attempt=1))
         rt, sin, sout = _make_runtime(t, stdin_content=req1)
-        rt.run_role("validator", lambda e, _req: e)
+        rt.run_role("router", lambda e, _req: e)
         envs1 = _drain(sout)
-        assert envs1[0]["event"]["payload"]["feedback"] == "only"
+        assert envs1[0]["event"]["payload"]["rationale"] == "only"
 
         # Second call — attempt=2 -> index 1, exhausted.
         rt._stdin = io.StringIO(_line(_request_envelope("task-2", attempt=2)))
         sout2 = io.StringIO()
         rt._stdout = sout2
         with pytest.raises(SystemExit):
-            rt.run_role("validator", lambda e, _req: e)
+            rt.run_role("router", lambda e, _req: e)
         env_err = _drain(sout2)[0]
         assert env_err["event"]["type"] == "error"
         assert "exhausted" in env_err["event"]["payload"]["error"]
