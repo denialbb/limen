@@ -48,9 +48,9 @@ const (
 type splitFocusArea int
 
 const (
-	splitFocusTimeline    splitFocusArea = iota // top-right: timeline (default)
-	splitFocusWorkers                           // bottom-right: workers panel
-	splitFocusWorkerDetail                      // top-right: per-worker detail (after Enter)
+	splitFocusTimeline     splitFocusArea = iota // top-right: timeline (default)
+	splitFocusWorkers                            // bottom-right: workers panel
+	splitFocusWorkerDetail                       // top-right: per-worker detail (after Enter)
 )
 
 // busEventMsg wraps a bus.Event delivered from the subscription channel.
@@ -669,9 +669,9 @@ func (m Model) activeTabView() string {
 	}
 }
 
-func (m Model) Finalized() bool       { return m.finalized }
+func (m Model) Finalized() bool             { return m.finalized }
 func (m Model) FinalState() state.TaskState { return m.finalState }
-func (m Model) TaskID() string        { return m.taskID }
+func (m Model) TaskID() string              { return m.taskID }
 
 func (m Model) String() string {
 	if !m.finalized {

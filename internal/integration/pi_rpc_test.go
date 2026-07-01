@@ -66,7 +66,7 @@ func TestPiRPCHandshake(t *testing.T) {
 	scanner := bufio.NewScanner(stdout)
 	foundAgentEnd := false
 
-	Loop:
+Loop:
 	for scanner.Scan() {
 		line := scanner.Text()
 		t.Logf("pi out: %s", line)

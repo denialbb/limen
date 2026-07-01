@@ -328,8 +328,8 @@ func TestEncoder_Concurrent(t *testing.T) {
 				env := &Envelope{
 					Kind: KindToolResponse,
 					ToolResp: &ToolResponse{
-						ID:    GenerateID(),
-						OK:    true,
+						ID:     GenerateID(),
+						OK:     true,
 						Result: mustMarshal(t, map[string]int{"g": g, "i": i}),
 					},
 				}

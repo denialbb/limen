@@ -33,7 +33,7 @@ fi
 echo "Test passed"
 exit 0
 `), 0755)
-	
+
 	// Create initial file
 	mathFile := filepath.Join(repoDir, "math.txt")
 	os.WriteFile(mathFile, []byte("empty"), 0644)

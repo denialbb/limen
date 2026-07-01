@@ -759,4 +759,3 @@ func findGitCommonDir() (string, error) {
 	}
 	return filepath.Dir(filepath.Dir(gitCommonDir)), nil
 }
-

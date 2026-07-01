@@ -13,13 +13,13 @@ func NewTerminalTheme() *Theme {
 		HeaderStateColor: "5", // magenta
 		HeaderCountColor: "8", // bright black (dim)
 
-		TabActiveBgColor: "5",  // magenta
-		TabActiveFgColor: "0",  // black
-		TabInactiveColor: "8",  // bright black (dim)
+		TabActiveBgColor: "5", // magenta
+		TabActiveFgColor: "0", // black
+		TabInactiveColor: "8", // bright black (dim)
 		TabPadH:          1,
 		TabBoundaryPad:   2,
 
-		SeparatorColor: "8",  // bright black
+		SeparatorColor: "8", // bright black
 		SeparatorRune:  "─",
 		SeparatorPadV:  0,
 
@@ -37,18 +37,18 @@ func NewTerminalTheme() *Theme {
 		TimestampColor: "8", // bright black (dim timestamp)
 		EventTextColor: "",  // terminal default foreground
 		KeywordColors: map[string]string{
-			"PASS":      "2",  // green
-			"FAIL":      "1",  // red
-			"APPROVED":  "2",  // green
-			"REVISION":  "3",  // yellow
-			"PROCEED":   "2",  // green
-			"ABORT":     "1",  // red
-			"CONFLICT":  "3",  // yellow
-			"FINALIZED": "6",  // cyan
-			"CRITICAL":  "1",  // red
-			"WARNING":   "3",  // yellow
-			"DONE":      "2",  // green
-			"COMMITTED": "2",  // green
+			"PASS":      "2", // green
+			"FAIL":      "1", // red
+			"APPROVED":  "2", // green
+			"REVISION":  "3", // yellow
+			"PROCEED":   "2", // green
+			"ABORT":     "1", // red
+			"CONFLICT":  "3", // yellow
+			"FINALIZED": "6", // cyan
+			"CRITICAL":  "1", // red
+			"WARNING":   "3", // yellow
+			"DONE":      "2", // green
+			"COMMITTED": "2", // green
 		},
 	}
 }

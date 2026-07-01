@@ -1,0 +1,25 @@
+#!/bin/bash
+set -e
+
+# Format check: fail if any staged .go files are not gofmt'd
+staged_go_files=$(git diff --cached --name-only --diff-filter=ACMRU | grep '\.go$' || true)
+
+if [ -z "$staged_go_files" ]; then
+    exit 0
+fi
+
+bad_fmt=0
+for f in $staged_go_files; do
+    if ! gofmt "$f" | diff -q "$f" - > /dev/null 2>&1; then
+        echo "gofmt: $f needs formatting"
+        bad_fmt=1
+    fi
+done
+
+if [ $bad_fmt -eq 1 ]; then
+    echo ""
+    echo "Fix with: gofmt -w internal/ cmd/"
+    exit 1
+fi
+
+exit 0

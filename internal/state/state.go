@@ -161,5 +161,3 @@ func IsValidTransition(current, next TaskState) bool {
 		return false
 	}
 }
-
-

@@ -159,8 +159,12 @@ func (m *mockGit) ProvisionWorktree(ctx context.Context, baseCommit, branchName,
 func (m *mockGit) ProvisionThrowawayWorktree(ctx context.Context, patch string) (*git.Worktree, error) {
 	return &git.Worktree{Path: "/tmp/mock-throwaway"}, nil
 }
-func (m *mockGit) CommitWorktree(ctx context.Context, taskID string, wt *git.Worktree) error { return nil }
-func (m *mockGit) CheckForConflicts(ctx context.Context, wt *git.Worktree) (bool, error)      { return false, nil }
+func (m *mockGit) CommitWorktree(ctx context.Context, taskID string, wt *git.Worktree) error {
+	return nil
+}
+func (m *mockGit) CheckForConflicts(ctx context.Context, wt *git.Worktree) (bool, error) {
+	return false, nil
+}
 func (m *mockGit) ExtractConflictRegions(ctx context.Context, wt *git.Worktree) ([]git.ConflictRegion, error) {
 	return nil, nil
 }
@@ -335,16 +339,16 @@ func TestFileWrite_PathPrefixGuard_RejectsEscapes(t *testing.T) {
 	// Now run a full subprocess that writes a real file via the adapter.
 	// We test this with exec.Command calling a Go helper that emulates the
 	// Python worker protocol.
-		t.Run("reject in adapter via subprocess", func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
+	t.Run("reject in adapter via subprocess", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 
-			tmpDir := t.TempDir()
+		tmpDir := t.TempDir()
 
-			// Build a tiny Go helper that acts as the Python subprocess:
-			// reads request, emits a file.write tool_request with a ../ path,
-			// expects ok=false in response.
-			helperPath := buildWorkerHelper(t, tmpDir, `
+		// Build a tiny Go helper that acts as the Python subprocess:
+		// reads request, emits a file.write tool_request with a ../ path,
+		// expects ok=false in response.
+		helperPath := buildWorkerHelper(t, tmpDir, `
 				{"kind":"tool_request","tool_request":{"id":"req-1","tool":"file.write","args":{"path":"../etc/passwd","content":"x"}}}
 			`)
 

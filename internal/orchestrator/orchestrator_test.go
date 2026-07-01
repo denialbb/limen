@@ -880,7 +880,6 @@ func TestBlockingCallbackRoundTrip(t *testing.T) {
 	}
 }
 
-
 // TestRunTask_EmitsTaskFinalizedOnEscalation verifies that the FAILED_ESCALATED
 // terminal state (via router Escalate) emits exactly one TaskFinalized event
 // with an empty FinalOutputRef.

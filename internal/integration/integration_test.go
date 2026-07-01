@@ -21,10 +21,10 @@ import (
 
 // binaryCache builds the limen binary at most once per test run.
 var (
-	binaryOnce  sync.Once
-	binaryPath  string
-	binaryDir   string
-	binaryErr   error
+	binaryOnce sync.Once
+	binaryPath string
+	binaryDir  string
+	binaryErr  error
 )
 
 func TestMain(m *testing.M) {
@@ -468,22 +468,22 @@ func getHeadCommit(t *testing.T, repoDir string) string {
 
 func TestSubmitVerdict(t *testing.T) {
 	binaryPath := buildLimenBinary(t)
-	
+
 	dbDir := t.TempDir()
 	dbPath := filepath.Join(dbDir, "limen.db")
-	
+
 	store, err := state.NewSQLiteStore(dbPath)
 	if err != nil {
 		t.Fatalf("Failed to open store: %v", err)
 	}
 	defer store.Close()
-	
+
 	taskID := "test-submit-verdict-task"
 	_, err = store.CreateTask(taskID, 3, "")
 	if err != nil {
 		t.Fatalf("Failed to create task: %v", err)
 	}
-	
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -493,18 +493,18 @@ func TestSubmitVerdict(t *testing.T) {
 		"--db-path", dbPath,
 		"--summary", "I did the work",
 	)
-	
+
 	// Capture stdout
 	var readyOut strings.Builder
 	readyCmd.Stdout = &readyOut
-	
+
 	if err := readyCmd.Start(); err != nil {
 		t.Fatalf("Failed to start ready-for-review: %v", err)
 	}
-	
+
 	// Wait a bit to ensure ready-for-review has written the pending callback
 	time.Sleep(500 * time.Millisecond)
-	
+
 	// 2. Run submit-verdict
 	submitCmd := exec.Command(binaryPath, "submit-verdict",
 		"--task-id", taskID,
@@ -512,18 +512,18 @@ func TestSubmitVerdict(t *testing.T) {
 		"--passes=true",
 		"--feedback", "Looks great",
 	)
-	
+
 	submitOut, err := submitCmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("submit-verdict failed: %v\nOutput: %s", err, string(submitOut))
 	}
-	
+
 	// 3. Wait for ready-for-review to finish
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- readyCmd.Wait()
 	}()
-	
+
 	select {
 	case err := <-errCh:
 		if err != nil {
@@ -532,13 +532,13 @@ func TestSubmitVerdict(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatalf("ready-for-review timed out waiting for verdict")
 	}
-	
+
 	// 4. Verify output
 	outputStr := strings.TrimSpace(readyOut.String())
 	if !strings.Contains(outputStr, `"passes":true`) || !strings.Contains(outputStr, `"feedback":"Looks great"`) {
 		t.Errorf("Expected output to contain verdict JSON, got: %s", outputStr)
 	}
-	
+
 	// 5. Verify database records
 	decisions, err := store.GetValidationDecisions(taskID)
 	if err != nil {
@@ -621,38 +621,38 @@ func TestValidatorThrowawayWorktree(t *testing.T) {
 
 func TestDBPathResolutionViaTaskID(t *testing.T) {
 	binaryPath := buildLimenBinary(t)
-	
+
 	// Set isolated HOME directory for test
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
-	
+
 	// Set up database in a temp directory
 	dbDir := t.TempDir()
 	dbPath := filepath.Join(dbDir, "test_resolved.db")
-	
+
 	store, err := state.NewSQLiteStore(dbPath)
 	if err != nil {
 		t.Fatalf("Failed to open store: %v", err)
 	}
 	defer store.Close()
-	
+
 	taskID := "test-resolve-task"
 	_, err = store.CreateTask(taskID, 3, "")
 	if err != nil {
 		t.Fatalf("Failed to create task: %v", err)
 	}
-	
+
 	// Register the DB path in the registry
 	registryDir := filepath.Join(tempHome, ".limen")
 	if err := os.MkdirAll(registryDir, 0755); err != nil {
 		t.Fatalf("Failed to create registry dir: %v", err)
 	}
-	
+
 	absDBPath, err := filepath.Abs(dbPath)
 	if err != nil {
 		absDBPath = dbPath
 	}
-	
+
 	registry := map[string]string{
 		taskID: absDBPath,
 	}
@@ -663,25 +663,25 @@ func TestDBPathResolutionViaTaskID(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(registryDir, "tasks.json"), regData, 0644); err != nil {
 		t.Fatalf("Failed to write registry: %v", err)
 	}
-	
+
 	// Now, run ready-for-review WITHOUT --db-path
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	
+
 	readyCmd := exec.CommandContext(ctx, binaryPath, "ready-for-review",
 		"--task-id", taskID,
 		"--summary", "work done",
 	)
 	var readyOut strings.Builder
 	readyCmd.Stdout = &readyOut
-	
+
 	if err := readyCmd.Start(); err != nil {
 		t.Fatalf("Failed to start ready-for-review: %v", err)
 	}
-	
+
 	// Wait a bit to ensure it has written the pending callback to the db
 	time.Sleep(500 * time.Millisecond)
-	
+
 	// Run submit-verdict WITHOUT --db-path
 	submitCmd := exec.Command(binaryPath, "submit-verdict",
 		"--task-id", taskID,
@@ -692,13 +692,13 @@ func TestDBPathResolutionViaTaskID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("submit-verdict failed: %v\nOutput: %s", err, string(submitOut))
 	}
-	
+
 	// Wait for ready-for-review to finish
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- readyCmd.Wait()
 	}()
-	
+
 	select {
 	case err := <-errCh:
 		if err != nil {
@@ -707,7 +707,7 @@ func TestDBPathResolutionViaTaskID(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatalf("ready-for-review timed out")
 	}
-	
+
 	// Verify output
 	outputStr := strings.TrimSpace(readyOut.String())
 	if !strings.Contains(outputStr, `"passes":true`) || !strings.Contains(outputStr, `"feedback":"Resolved successfully"`) {
