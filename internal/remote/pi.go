@@ -18,7 +18,20 @@ import (
 )
 
 type piWorker struct {
-	opts *options
+	cmdArgs []string
+	opts    *options
+}
+
+// piCommandArgs builds the default argv used to launch the pi binary in RPC
+// mode with the configured provider and model.
+func piCommandArgs(o *options) []string {
+	return []string{
+		"pi", "--mode", "rpc",
+		"--no-extensions",
+		"--exclude-tools", "fetch,browser,internet",
+		"--provider", o.piProvider,
+		"--model", o.piModel,
+	}
 }
 
 func NewPiWorker(opts ...Option) orchestrator.Worker {
@@ -26,16 +39,21 @@ func NewPiWorker(opts ...Option) orchestrator.Worker {
 	for _, opt := range opts {
 		opt(o)
 	}
-	return &piWorker{opts: o}
+	return &piWorker{cmdArgs: piCommandArgs(o), opts: o}
+}
+
+// newPiWorkerCmd creates a piWorker backed by an explicit argv, letting tests
+// point it at a fake script that emits Pi's NDJSON dialect.
+func newPiWorkerCmd(args []string, opts ...Option) *piWorker {
+	o := defaultOptions()
+	for _, opt := range opts {
+		opt(o)
+	}
+	return &piWorker{cmdArgs: args, opts: o}
 }
 
 func (w *piWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *git.Worktree, feedback string, em orchestrator.Emitter) error {
-	cmd := exec.CommandContext(ctx, "pi", "--mode", "rpc",
-		"--no-extensions",
-		"--exclude-tools", "fetch,browser,internet",
-		"--provider", w.opts.piProvider,
-		"--model", w.opts.piModel,
-	)
+	cmd := exec.CommandContext(ctx, w.cmdArgs[0], w.cmdArgs[1:]...)
 	cmd.Dir = wt.Path
 
 	// Prepend the limen binary's directory to PATH so the agent can call
@@ -116,14 +134,9 @@ func (w *piWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *gi
 	for scanner.Scan() {
 		line := scanner.Text()
 
-		var msg map[string]interface{}
-		if err := json.Unmarshal([]byte(line), &msg); err != nil {
-			continue
-		}
+		res := decodePiEvent(line, task.ID, time.Now())
 
-		msgType, _ := msg["type"].(string)
-
-		if msgType == "agent_end" {
+		if res.agentEnd {
 			// Signal EOF so Pi can exit cleanly rather than blocking on stdin.
 			stdin.Close()
 			break
@@ -132,63 +145,8 @@ func (w *piWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *gi
 		if em == nil {
 			continue
 		}
-
-		switch msgType {
-		case "tool_execution_start":
-			toolName, _ := msg["toolName"].(string)
-			if toolName == "" {
-				toolName, _ = msg["tool"].(string)
-			}
-			var argsStr string
-			if args, ok := msg["args"]; ok {
-				b, _ := json.Marshal(args)
-				argsStr = string(b)
-			} else if args, ok := msg["arguments"]; ok {
-				b, _ := json.Marshal(args)
-				argsStr = string(b)
-			} else {
-				argsStr = line
-			}
-			em.Publish(&bus.WorkerToolCall{
-				TaskID:    task.ID,
-				Tool:      toolName,
-				Args:      argsStr,
-				Timestamp: time.Now(),
-			})
-
-		case "turn_end":
-			// Extract agent thinking and text from the completed assistant turn.
-			turnMsg, _ := msg["message"].(map[string]interface{})
-			if role, _ := turnMsg["role"].(string); role != "assistant" {
-				continue
-			}
-			content, _ := turnMsg["content"].([]interface{})
-			for _, raw := range content {
-				part, ok := raw.(map[string]interface{})
-				if !ok {
-					continue
-				}
-				switch part["type"] {
-				case "thinking":
-					if text, _ := part["thinking"].(string); text != "" {
-						em.Publish(&bus.WorkerAgentMessage{
-							TaskID:    task.ID,
-							Kind:      "thinking",
-							Text:      text,
-							Timestamp: time.Now(),
-						})
-					}
-				case "text":
-					if text, _ := part["text"].(string); text != "" {
-						em.Publish(&bus.WorkerAgentMessage{
-							TaskID:    task.ID,
-							Kind:      "message",
-							Text:      text,
-							Timestamp: time.Now(),
-						})
-					}
-				}
-			}
+		for _, ev := range res.events {
+			em.Publish(ev)
 		}
 	}
 
@@ -217,4 +175,88 @@ func (w *piWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *gi
 	}
 
 	return nil
+}
+
+// piDecodeResult is the outcome of decoding a single Pi RPC line: the bus
+// events to emit and whether the line signals the end of the agent run.
+type piDecodeResult struct {
+	events   []bus.Event
+	agentEnd bool
+}
+
+// decodePiEvent translates one line of Pi's RPC NDJSON dialect into the bus
+// events it should produce. It is a pure function over the raw line, task ID,
+// and timestamp, keeping Pi's dialect decoding separate from process I/O.
+func decodePiEvent(line, taskID string, now time.Time) piDecodeResult {
+	var msg map[string]interface{}
+	if err := json.Unmarshal([]byte(line), &msg); err != nil {
+		return piDecodeResult{}
+	}
+
+	msgType, _ := msg["type"].(string)
+
+	switch msgType {
+	case "agent_end":
+		return piDecodeResult{agentEnd: true}
+
+	case "tool_execution_start":
+		toolName, _ := msg["toolName"].(string)
+		if toolName == "" {
+			toolName, _ = msg["tool"].(string)
+		}
+		var argsStr string
+		if args, ok := msg["args"]; ok {
+			b, _ := json.Marshal(args)
+			argsStr = string(b)
+		} else if args, ok := msg["arguments"]; ok {
+			b, _ := json.Marshal(args)
+			argsStr = string(b)
+		} else {
+			argsStr = line
+		}
+		return piDecodeResult{events: []bus.Event{&bus.WorkerToolCall{
+			TaskID:    taskID,
+			Tool:      toolName,
+			Args:      argsStr,
+			Timestamp: now,
+		}}}
+
+	case "turn_end":
+		// Extract agent thinking and text from the completed assistant turn.
+		turnMsg, _ := msg["message"].(map[string]interface{})
+		if role, _ := turnMsg["role"].(string); role != "assistant" {
+			return piDecodeResult{}
+		}
+		content, _ := turnMsg["content"].([]interface{})
+		var events []bus.Event
+		for _, raw := range content {
+			part, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			switch part["type"] {
+			case "thinking":
+				if text, _ := part["thinking"].(string); text != "" {
+					events = append(events, &bus.WorkerAgentMessage{
+						TaskID:    taskID,
+						Kind:      "thinking",
+						Text:      text,
+						Timestamp: now,
+					})
+				}
+			case "text":
+				if text, _ := part["text"].(string); text != "" {
+					events = append(events, &bus.WorkerAgentMessage{
+						TaskID:    taskID,
+						Kind:      "message",
+						Text:      text,
+						Timestamp: now,
+					})
+				}
+			}
+		}
+		return piDecodeResult{events: events}
+	}
+
+	return piDecodeResult{}
 }
