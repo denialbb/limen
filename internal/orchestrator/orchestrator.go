@@ -295,7 +295,7 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 		}
 
 		o.recordToolCall(task.ID, "worker.ProduceSolution", "", "")
-		
+
 		workerErrCh := make(chan error, 1)
 		go func() {
 			workerErrCh <- o.worker.ProduceSolution(ctx, task, wt, feedback, em)
@@ -313,61 +313,15 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 			case <-time.After(200 * time.Millisecond):
 				cbID, _, found, err := o.signaler.GetPendingCallback(task.ID)
 				if err == nil && found {
-					if err := o.transitionAndEmit(task.ID, state.StateAwaitingValidation, em); err != nil {
-						return err
-					}
-					
-					diff, err := o.git.GetWorktreeDiff(ctx, wt)
+					outcome, err := o.validateCandidate(ctx, task, wt, em)
 					if err != nil {
 						return err
 					}
 
-					tempWt, err := o.git.ProvisionThrowawayWorktree(ctx, diff)
-					if err != nil {
-						return err
-					}
-
-					o.recordToolCall(task.ID, "validator.Evaluate", "", "")
-					passes, validationFeedback, err := o.validator.Evaluate(ctx, task, tempWt, em)
-					
-					_ = o.git.DestroyWorktree(context.WithoutCancel(ctx), tempWt)
-					if err != nil {
-						return err
-					}
-
-					if passes {
-						hasConflicts, err := o.git.CheckForConflicts(ctx, wt)
-						if err != nil {
-							return err
-						}
-						if hasConflicts {
-							passes = false
-							regions, extractErr := o.git.ExtractConflictRegions(ctx, wt)
-							if extractErr != nil {
-								em.Publish(&bus.ConflictDetected{
-									TaskID:    task.ID,
-									Regions:   nil,
-									Timestamp: time.Now(),
-								})
-								return extractErr
-							}
-							em.Publish(&bus.ConflictDetected{
-								TaskID:    task.ID,
-								Regions:   regions,
-								Timestamp: time.Now(),
-							})
-							validationFeedback = fmt.Sprintf("Conflicts detected: %+v", regions)
-						}
-					}
-
-					if err := o.store.RecordValidationDecision(task.ID, passes, validationFeedback); err != nil {
-						return err
-					}
-
-					verdict := state.Verdict{Passes: passes, Feedback: validationFeedback}
+					verdict := state.Verdict{Passes: outcome.passes, Feedback: outcome.feedback}
 					_ = o.signaler.WriteCallbackVerdict(cbID, string(verdict.Marshal()))
-					
-					if passes {
+
+					if outcome.passes {
 						if err := o.transitionAndEmit(task.ID, state.StateApproved, em); err != nil {
 							return err
 						}
@@ -393,7 +347,6 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 						if err != nil {
 							return err
 						}
-						feedback = validationFeedback
 						if err := o.transitionAndEmit(task.ID, state.StateWorkerRunning, em); err != nil {
 							return err
 						}
@@ -445,57 +398,12 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 
 		// Synchronous validation path: worker returned without registering
 		// a callback (e.g. mock/synchronous workers from issues 007-012).
-		// Transition through the validation states inline.
-		if err := o.transitionAndEmit(task.ID, state.StateAwaitingValidation, em); err != nil {
-			return err
-		}
-
-		diff, err := o.git.GetWorktreeDiff(ctx, wt)
+		outcome, err := o.validateCandidate(ctx, task, wt, em)
 		if err != nil {
 			return err
 		}
-
-		tempWt, err := o.git.ProvisionThrowawayWorktree(ctx, diff)
-		if err != nil {
-			return err
-		}
-
-		o.recordToolCall(task.ID, "validator.Evaluate", "", "")
-		passes, validationFeedback, vErr := o.validator.Evaluate(ctx, task, tempWt, em)
-
-		_ = o.git.DestroyWorktree(context.WithoutCancel(ctx), tempWt)
-		if vErr != nil {
-			return vErr
-		}
-
-		if passes {
-			hasConflicts, err := o.git.CheckForConflicts(ctx, wt)
-			if err != nil {
-				return err
-			}
-			if hasConflicts {
-				passes = false
-				regions, extractErr := o.git.ExtractConflictRegions(ctx, wt)
-				if extractErr != nil {
-					em.Publish(&bus.ConflictDetected{
-						TaskID:    task.ID,
-						Regions:   nil,
-						Timestamp: time.Now(),
-					})
-					return extractErr
-				}
-				em.Publish(&bus.ConflictDetected{
-					TaskID:    task.ID,
-					Regions:   regions,
-					Timestamp: time.Now(),
-				})
-				validationFeedback = fmt.Sprintf("Conflicts detected: %+v", regions)
-			}
-		}
-
-		if err := o.store.RecordValidationDecision(task.ID, passes, validationFeedback); err != nil {
-			return err
-		}
+		passes := outcome.passes
+		validationFeedback := outcome.feedback
 
 		if passes {
 			// NODE: Perform git operations first while still in
@@ -557,3 +465,69 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 	}
 }
 
+// validationOutcome carries the result of a single validation pass so both the
+// callback and synchronous dispatchers can drive their pass/fail branches.
+type validationOutcome struct {
+	passes   bool
+	feedback string
+}
+
+// validateCandidate runs the shared validation body against the candidate in wt:
+// it transitions the task into AWAITING_VALIDATION, evaluates the diff in a
+// throwaway worktree, folds in any git conflict detection, and records the
+// validation decision. It returns the resolved pass/fail and feedback; callers
+// own the divergent post-decision handling (verdict writing, commit, retry).
+func (o *OrchestratorImpl) validateCandidate(ctx context.Context, task *state.Task, wt *git.Worktree, em Emitter) (validationOutcome, error) {
+	if err := o.transitionAndEmit(task.ID, state.StateAwaitingValidation, em); err != nil {
+		return validationOutcome{}, err
+	}
+
+	diff, err := o.git.GetWorktreeDiff(ctx, wt)
+	if err != nil {
+		return validationOutcome{}, err
+	}
+
+	tempWt, err := o.git.ProvisionThrowawayWorktree(ctx, diff)
+	if err != nil {
+		return validationOutcome{}, err
+	}
+
+	o.recordToolCall(task.ID, "validator.Evaluate", "", "")
+	passes, feedback, err := o.validator.Evaluate(ctx, task, tempWt, em)
+
+	_ = o.git.DestroyWorktree(context.WithoutCancel(ctx), tempWt)
+	if err != nil {
+		return validationOutcome{}, err
+	}
+
+	if passes {
+		hasConflicts, err := o.git.CheckForConflicts(ctx, wt)
+		if err != nil {
+			return validationOutcome{}, err
+		}
+		if hasConflicts {
+			passes = false
+			regions, extractErr := o.git.ExtractConflictRegions(ctx, wt)
+			if extractErr != nil {
+				em.Publish(&bus.ConflictDetected{
+					TaskID:    task.ID,
+					Regions:   nil,
+					Timestamp: time.Now(),
+				})
+				return validationOutcome{}, extractErr
+			}
+			em.Publish(&bus.ConflictDetected{
+				TaskID:    task.ID,
+				Regions:   regions,
+				Timestamp: time.Now(),
+			})
+			feedback = fmt.Sprintf("Conflicts detected: %+v", regions)
+		}
+	}
+
+	if err := o.store.RecordValidationDecision(task.ID, passes, feedback); err != nil {
+		return validationOutcome{}, err
+	}
+
+	return validationOutcome{passes: passes, feedback: feedback}, nil
+}
