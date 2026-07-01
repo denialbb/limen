@@ -182,62 +182,6 @@ func (v *cliValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.W
 	return passes, feedback, nil
 }
 
-// cliGit implements the orchestrator GitClient using the real WorktreeManager.
-type cliGit struct {
-	manager    git.WorktreeManager
-	repoPath   string
-}
-
-func (c *cliGit) IsValid(ctx context.Context) (bool, error) {
-	// Pipeline gate 1: verify the repository is inside a git worktree and has no
-	// uncommitted changes or known integrity issues.
-	cmdDir := exec.CommandContext(ctx, "git", "rev-parse", "--git-dir")
-	cmdDir.Dir = c.repoPath
-	if out, err := cmdDir.CombinedOutput(); err != nil {
-		return false, fmt.Errorf("not a git repository: %w, output: %s", err, string(out))
-	}
-
-	cmdStatus := exec.CommandContext(ctx, "git", "status", "--porcelain", "--untracked-files=no")
-	cmdStatus.Dir = c.repoPath
-	out, err := cmdStatus.Output()
-	if err != nil {
-		return false, fmt.Errorf("git status failed: %w", err)
-	}
-	if strings.TrimSpace(string(out)) != "" {
-		return false, nil
-	}
-
-	cmdFsck := exec.CommandContext(ctx, "git", "fsck", "--full")
-	cmdFsck.Dir = c.repoPath
-	if err := cmdFsck.Run(); err != nil {
-		return false, nil
-	}
-
-	return true, nil
-}
-
-func (c *cliGit) ProvisionWorktree(ctx context.Context, baseCommit, branchName, path string) (*git.Worktree, error) {
-	return c.manager.ProvisionWorktree(ctx, baseCommit, branchName, path)
-}
-func (c *cliGit) ProvisionThrowawayWorktree(ctx context.Context, patch string) (*git.Worktree, error) {
-	return c.manager.ProvisionThrowawayWorktree(ctx, patch)
-}
-func (c *cliGit) CommitWorktree(ctx context.Context, taskID string, wt *git.Worktree) error {
-	return c.manager.CommitWorktree(ctx, taskID, wt)
-}
-func (c *cliGit) CheckForConflicts(ctx context.Context, wt *git.Worktree) (bool, error) {
-	return c.manager.CheckForConflicts(ctx, wt)
-}
-func (c *cliGit) ExtractConflictRegions(ctx context.Context, wt *git.Worktree) ([]git.ConflictRegion, error) {
-	return c.manager.ExtractConflictRegions(ctx, wt)
-}
-func (c *cliGit) DestroyWorktree(ctx context.Context, wt *git.Worktree) error {
-	return c.manager.DestroyWorktree(ctx, wt)
-}
-func (c *cliGit) GetWorktreeDiff(ctx context.Context, wt *git.Worktree) (string, error) {
-	return c.manager.GetWorktreeDiff(ctx, wt)
-}
-
 func main() {
 	// NOTE: The bare invocation `limen` is the primary human-facing entry point
 	// and launches the interactive TUI by default. See .agents/docs/interactive_tui.md.
@@ -387,7 +331,7 @@ func runTaskInteractive(taskID, prompt, dbPath, repoPath string, mock bool, mock
 		gitClient orchestrator.GitClient
 	)
 
-	gitClient = &cliGit{manager: manager, repoPath: repoPath}
+	gitClient = manager
 
 	logDir := filepath.Join(repoPath, ".limen", "logs")
 
@@ -516,7 +460,7 @@ func runTaskWithConfig(taskID, prompt, dbPath, repoPath string, mock bool, mockT
 		gitClient orchestrator.GitClient
 	)
 
-	gitClient = &cliGit{manager: manager, repoPath: repoPath}
+	gitClient = manager
 
 	logDir := filepath.Join(repoPath, ".limen", "logs")
 

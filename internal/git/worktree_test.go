@@ -350,3 +350,46 @@ func showFileAtCommit(t *testing.T, repoDir, branch, file string) (string, error
 	}
 	return string(out), nil
 }
+
+func TestIsValid_CleanRepo(t *testing.T) {
+	repoDir := setupTestRepo(t)
+	manager := NewWorktreeManager(repoDir, "main")
+
+	valid, err := manager.IsValid(context.Background())
+	if err != nil {
+		t.Fatalf("IsValid returned error: %v", err)
+	}
+	if !valid {
+		t.Fatal("expected clean repository to be valid")
+	}
+}
+
+func TestIsValid_DirtyRepo(t *testing.T) {
+	repoDir := setupTestRepo(t)
+	manager := NewWorktreeManager(repoDir, "main")
+
+	if err := os.WriteFile(filepath.Join(repoDir, "file.txt"), []byte("dirty change\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	valid, err := manager.IsValid(context.Background())
+	if err != nil {
+		t.Fatalf("IsValid returned error: %v", err)
+	}
+	if valid {
+		t.Fatal("expected repository with uncommitted tracked changes to be invalid")
+	}
+}
+
+func TestIsValid_NotARepo(t *testing.T) {
+	dir := t.TempDir()
+	manager := NewWorktreeManager(dir, "main")
+
+	valid, err := manager.IsValid(context.Background())
+	if err == nil {
+		t.Fatal("expected error for non-git directory")
+	}
+	if valid {
+		t.Fatal("expected non-git directory to be invalid")
+	}
+}

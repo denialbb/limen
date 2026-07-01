@@ -64,25 +64,9 @@ type Validator interface {
 }
 
 // GitClient handles physical layer operations like validating the repository, committing,
-// and managing worktrees. It is designed to wrap the git.WorktreeManager capabilities.
-type GitClient interface {
-	// IsValid checks that the repository is in a valid state for operations.
-	IsValid(ctx context.Context) (bool, error)
-	// ProvisionWorktree creates an isolated worktree for the task.
-	ProvisionWorktree(ctx context.Context, baseCommit, branchName, path string) (*git.Worktree, error)
-	// CommitWorktree commits the worktree for the given task.
-	CommitWorktree(ctx context.Context, taskID string, wt *git.Worktree) error
-	// CheckForConflicts detects if a merge/rebase conflict exists in the worktree.
-	CheckForConflicts(ctx context.Context, wt *git.Worktree) (bool, error)
-	// ExtractConflictRegions extracts conflicting diff regions if a conflict is detected.
-	ExtractConflictRegions(ctx context.Context, wt *git.Worktree) ([]git.ConflictRegion, error)
-	// DestroyWorktree removes the ephemeral worktree and prunes it from Git.
-	DestroyWorktree(ctx context.Context, wt *git.Worktree) error
-	// GetWorktreeDiff returns the worker's uncommitted changes relative to HEAD.
-	GetWorktreeDiff(ctx context.Context, wt *git.Worktree) (string, error)
-	// ProvisionThrowawayWorktree creates a detached worktree with the given patch applied.
-	ProvisionThrowawayWorktree(ctx context.Context, patch string) (*git.Worktree, error)
-}
+// and managing worktrees. It is the git.WorktreeManager contract, aliased so orchestrator
+// consumers depend on a single interface satisfied directly by the WorktreeManager.
+type GitClient = git.WorktreeManager
 
 // Orchestrator defines the main contract for running the Limen Go Core Loop.
 // It is the sole component permitted to advance the task's state.
