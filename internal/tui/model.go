@@ -555,9 +555,7 @@ func (m Model) View() string {
 	}
 	sepLine := theme.SeparatorStyle().Render(strings.Repeat(theme.SeparatorRune, sepWidth))
 
-	hint := lipgloss.NewStyle().Faint(true).Foreground(lipgloss.Color("245")).Render(
-		"  [1-4] tab  [j/k] scroll  [q] quit",
-	)
+	hint := theme.HintStyle(m.width).Render("[1-4] tab  [j/k] scroll  [q] quit")
 
 	blocks := []string{
 		m.header.View(),
@@ -629,9 +627,7 @@ func (m Model) splitView() string {
 
 	mainArea := splitColumns(leftContent, rightContent, contentH)
 
-	hint := lipgloss.NewStyle().Faint(true).Foreground(lipgloss.Color("245")).Render(
-		"  [j/k] scroll  [w] workers  [Enter] select  [Esc] back  [q] quit",
-	)
+	hint := theme.HintStyle(m.width).Render("[j/k] scroll  [w] workers  [Enter] select  [Esc] back  [q] quit")
 
 	blocks := []string{
 		m.header.View(),

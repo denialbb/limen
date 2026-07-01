@@ -170,6 +170,15 @@ func (t *Theme) FooterStyle() lipgloss.Style {
 		Padding(0, 1)
 }
 
+// HintStyle returns a style for the keybinding hint line: dim (same color as
+// timestamps) and right-aligned across the given width.
+func (t *Theme) HintStyle(width int) lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color(t.TimestampColor)).
+		Width(width).
+		Align(lipgloss.Right)
+}
+
 var allCapsRegex = regexp.MustCompile(`\b[A-Z_]{3,}\b`)
 
 // FormatEventLine colors the timestamp, body, and matched keywords.
