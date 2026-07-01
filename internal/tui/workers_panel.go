@@ -173,13 +173,13 @@ func (w WorkersPanel) statusIcon(e WorkerEntry) string {
 		if frame == "" {
 			frame = "⠙"
 		}
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render(frame)
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#fab387")).Render(frame)
 	case WorkerStatusAwaiting:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("○")
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#7f849c")).Render("○")
 	case WorkerStatusSuccess:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render("✓")
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#a6e3a1")).Render("✓")
 	case WorkerStatusFailed:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render("✗")
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#f38ba8")).Render("✗")
 	}
 	return "?"
 }

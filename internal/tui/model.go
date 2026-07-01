@@ -379,7 +379,8 @@ func (m Model) handleResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 }
 
 // handleBusEvent routes a single bus.Event to the header and the appropriate
-// tab(s). Routing follows the taxonomy in the design document:
+// tab(s) and split-mode panels. Routing follows the taxonomy in the design
+// document:
 //
 //   - Timeline receives ALL events.
 //   - Router receives ContextBuilt, RouterExamining, RouterDecision.
@@ -389,37 +390,36 @@ func (m Model) handleResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 //     ValidatorVerdict.
 //   - TaskStateChanged updates the header state and the timeline.
 //   - TaskFinalized flips the finalized flag, records the final state, and
-//     auto-switches to the Timeline tab for review.
+//     auto-switches to the Timeline tab for review (tab mode only).
 func (m Model) handleBusEvent(msg busEventMsg) (tea.Model, tea.Cmd) {
 	ev := msg.event
 	if ev == nil {
 		return m, waitForEvent(m.eventCh)
 	}
 
-	// The header and timeline both see every event; their Update methods
-	// ignore anything they don't care about.
+	// Header and timeline see every event.
 	m.header, _ = m.header.Update(tabs.EventMsg{Event: ev})
 	m.timeline, _ = m.timeline.Update(tabs.EventMsg{Event: ev})
 
 	var tabToFlash int = -1
-	switch ev := ev.(type) {
+	switch e := ev.(type) {
 	case *bus.TaskStateChanged:
 
 	case *bus.ContextBuilt:
-		m.router, _ = m.router.Update(tabs.EventMsg{Event: ev})
+		m.router, _ = m.router.Update(tabs.EventMsg{Event: e})
 		tabToFlash = int(tabRouter)
 
 	case *bus.RouterExamining:
-		m.router, _ = m.router.Update(tabs.EventMsg{Event: ev})
+		m.router, _ = m.router.Update(tabs.EventMsg{Event: e})
 		tabToFlash = int(tabRouter)
 
 	case *bus.RouterDecisionEvent:
-		m.router, _ = m.router.Update(tabs.EventMsg{Event: ev})
+		m.router, _ = m.router.Update(tabs.EventMsg{Event: e})
 		tabToFlash = int(tabRouter)
 
 	case *bus.WorkerStarted:
-		m.worker, _ = m.worker.Update(tabs.EventMsg{Event: ev})
-		m.workersPanel = m.workersPanel.HandleEvent(ev)
+		m.worker, _ = m.worker.Update(tabs.EventMsg{Event: e})
+		m.workersPanel = m.workersPanel.HandleEvent(e)
 		m.currentWorkerID = m.workersPanel.SelectedID()
 		m.workerDetail = m.workerDetail.SetWorker(m.currentWorkerID)
 		tabToFlash = int(tabWorker)
@@ -427,42 +427,42 @@ func (m Model) handleBusEvent(msg busEventMsg) (tea.Model, tea.Cmd) {
 	case *bus.WorkerAgentMessage:
 		if m.currentWorkerID != "" {
 			prefix := "agent: "
-			if ev.Kind == "thinking" {
+			if e.Kind == "thinking" {
 				prefix = "→ "
 			}
-			text := strings.TrimSpace(strings.ReplaceAll(ev.Text, "\n", " "))
+			text := strings.TrimSpace(strings.ReplaceAll(e.Text, "\n", " "))
 			var line string
 			if tabs.EventFormatter != nil {
-				line = tabs.EventFormatter(ev.Time(), prefix+text)
+				line = tabs.EventFormatter(e.Time(), prefix+text)
 			} else {
-				line = "[" + ev.Time().Format("15:04:05") + "] " + prefix + text
+				line = "[" + e.Time().Format("15:04:05") + "] " + prefix + text
 			}
 			m.workerDetail = m.workerDetail.AppendLine(m.currentWorkerID, line)
 		}
 		tabToFlash = int(tabWorker)
 
 	case *bus.WorkerToolCall:
-		m.worker, _ = m.worker.Update(tabs.EventMsg{Event: ev})
+		m.worker, _ = m.worker.Update(tabs.EventMsg{Event: e})
 		if m.currentWorkerID != "" {
-			line := fmt.Sprintf("tool call: %s %s", ev.Tool, ev.Args)
+			line := fmt.Sprintf("tool call: %s %s", e.Tool, e.Args)
 			if tabs.EventFormatter != nil {
-				line = tabs.EventFormatter(ev.Time(), line)
+				line = tabs.EventFormatter(e.Time(), line)
 			}
 			m.workerDetail = m.workerDetail.AppendLine(m.currentWorkerID, line)
 		}
 		tabToFlash = int(tabWorker)
 
 	case *bus.WorkerFileEdit:
-		m.worker, _ = m.worker.Update(tabs.EventMsg{Event: ev})
+		m.worker, _ = m.worker.Update(tabs.EventMsg{Event: e})
 		if m.currentWorkerID != "" {
-			line := fmt.Sprintf("file edit: %s (%s)", ev.Path, ev.Op)
+			line := fmt.Sprintf("file edit: %s (%s)", e.Path, e.Op)
 			if tabs.EventFormatter != nil {
-				line = tabs.EventFormatter(ev.Time(), line)
+				line = tabs.EventFormatter(e.Time(), line)
 			}
 			m.workerDetail = m.workerDetail.AppendLine(m.currentWorkerID, line)
-			if ev.DiffHunk != "" {
+			if e.DiffHunk != "" {
 				faintStyle := lipgloss.NewStyle().Faint(true).Foreground(lipgloss.Color("240"))
-				for _, dl := range strings.Split(ev.DiffHunk, "\n") {
+				for _, dl := range strings.Split(e.DiffHunk, "\n") {
 					m.workerDetail = m.workerDetail.AppendLine(m.currentWorkerID, faintStyle.Render("  "+dl))
 				}
 			}
@@ -470,44 +470,44 @@ func (m Model) handleBusEvent(msg busEventMsg) (tea.Model, tea.Cmd) {
 		tabToFlash = int(tabWorker)
 
 	case *bus.WorkerFinished:
-		m.worker, _ = m.worker.Update(tabs.EventMsg{Event: ev})
-		m.workersPanel = m.workersPanel.HandleEvent(ev)
+		m.worker, _ = m.worker.Update(tabs.EventMsg{Event: e})
+		m.workersPanel = m.workersPanel.HandleEvent(e)
 		tabToFlash = int(tabWorker)
 
 	case *bus.ConflictDetected:
-		m.worker, _ = m.worker.Update(tabs.EventMsg{Event: ev})
+		m.worker, _ = m.worker.Update(tabs.EventMsg{Event: e})
 		tabToFlash = int(tabWorker)
 
 	case *bus.ValidatorExamining:
-		m.validator, _ = m.validator.Update(tabs.EventMsg{Event: ev})
+		m.validator, _ = m.validator.Update(tabs.EventMsg{Event: e})
 		tabToFlash = int(tabValidator)
 
 	case *bus.ValidatorCriterionResult:
-		m.validator, _ = m.validator.Update(tabs.EventMsg{Event: ev})
+		m.validator, _ = m.validator.Update(tabs.EventMsg{Event: e})
 		if m.currentWorkerID != "" {
 			verdict := "FAIL"
-			if ev.Passed {
+			if e.Passed {
 				verdict = "PASS"
 			}
-			line := fmt.Sprintf("criterion %q: %s", ev.Criterion, verdict)
+			line := fmt.Sprintf("criterion %q: %s", e.Criterion, verdict)
 			if tabs.EventFormatter != nil {
-				line = tabs.EventFormatter(ev.Time(), line)
+				line = tabs.EventFormatter(e.Time(), line)
 			}
 			m.workerDetail = m.workerDetail.AppendLine(m.currentWorkerID, line)
 		}
 		tabToFlash = int(tabValidator)
 
 	case *bus.ValidatorVerdict:
-		m.validator, _ = m.validator.Update(tabs.EventMsg{Event: ev})
-		m.workersPanel = m.workersPanel.HandleEvent(ev)
+		m.validator, _ = m.validator.Update(tabs.EventMsg{Event: e})
+		m.workersPanel = m.workersPanel.HandleEvent(e)
 		if m.currentWorkerID != "" {
 			v := "FAIL"
-			if ev.Passes {
+			if e.Passes {
 				v = "PASS"
 			}
-			line := fmt.Sprintf("verdict: %s — %s", v, strings.TrimSpace(ev.Feedback))
+			line := fmt.Sprintf("verdict: %s — %s", v, strings.TrimSpace(e.Feedback))
 			if tabs.EventFormatter != nil {
-				line = tabs.EventFormatter(ev.Time(), line)
+				line = tabs.EventFormatter(e.Time(), line)
 			}
 			m.workerDetail = m.workerDetail.AppendLine(m.currentWorkerID, line)
 		}
@@ -515,8 +515,8 @@ func (m Model) handleBusEvent(msg busEventMsg) (tea.Model, tea.Cmd) {
 
 	case *bus.TaskFinalized:
 		m.finalized = true
-		m.finalState = ev.FinalState
-		m.workersPanel = m.workersPanel.HandleEvent(ev)
+		m.finalState = e.FinalState
+		m.workersPanel = m.workersPanel.HandleEvent(e)
 		if m.layout == layoutTab {
 			setCurrentTab(&m, tabTimeline)
 		}
@@ -568,15 +568,15 @@ func (m Model) View() string {
 	if theme.SeparatorPadV > 0 {
 		pad := strings.Repeat(" ", max(m.width, 1))
 		padded := make([]string, 0, len(blocks)+2*theme.SeparatorPadV)
-		padded = append(padded, blocks[0]) // header
+		padded = append(padded, blocks[0])
 		for i := 0; i < theme.SeparatorPadV; i++ {
 			padded = append(padded, pad)
 		}
-		padded = append(padded, blocks[1]) // separator
+		padded = append(padded, blocks[1])
 		for i := 0; i < theme.SeparatorPadV; i++ {
 			padded = append(padded, pad)
 		}
-		padded = append(padded, blocks[2:]...) // content + tabs
+		padded = append(padded, blocks[2:]...)
 		blocks = padded
 	}
 
