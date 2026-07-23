@@ -91,7 +91,8 @@ Limen has completed its core orchestration layer. The Go Core state machine, SQL
 - [x] Implemented the Go SQLite WAL state machine
 - [x] Implemented the Go Git Worktree virtualization engine
 - [x] Built the core `limen` subprocess CLI
-- [ ] Implement the Python MCP stateless clients and routing heuristics
+- [x] Real Worker/Validator loop (Pi-default, MCP-fallback) reaching `COMMITTED`
+- [ ] Implement the Go-native progressive-retrieval pipeline (BM25 + structural stage) and the real Router (see `docs/adr/`)
 
 ---
 
