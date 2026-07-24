@@ -160,6 +160,12 @@ type options struct {
 	logDir          string
 	piProvider      string
 	piModel         string
+	// workerModel is the dialect-neutral model selector for the non-pi worker
+	// dialects (claude, opencode, agy). Each dialect maps it onto its own model
+	// flag; empty means the dialect's own default.
+	workerModel string
+	// validatorModel is the dialect-neutral model selector for agent validators.
+	validatorModel string
 }
 
 func defaultOptions() *options {
@@ -200,6 +206,22 @@ func WithPiModel(model string) Option {
 		if model != "" {
 			o.piModel = model
 		}
+	}
+}
+
+// WithWorkerModel sets the dialect-neutral worker model selector (claude,
+// opencode, agy). Empty leaves the dialect's own default.
+func WithWorkerModel(model string) Option {
+	return func(o *options) {
+		o.workerModel = model
+	}
+}
+
+// WithValidatorModel sets the dialect-neutral validator model selector. Empty
+// leaves the dialect's own default.
+func WithValidatorModel(model string) Option {
+	return func(o *options) {
+		o.validatorModel = model
 	}
 }
 
