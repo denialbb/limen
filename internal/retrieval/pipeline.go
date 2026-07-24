@@ -5,6 +5,7 @@ package retrieval
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -71,13 +72,20 @@ func (s StaticCorpus) Load(ctx context.Context, repoPath string) (Corpus, error)
 	return Corpus(s), nil
 }
 
+const (
+	defaultCandidateFloor = 100
+	defaultExpandAlpha    = 0.5
+)
+
 // Pipeline is the deep module: composable Stages, a Chunker, an Analyzer and a
 // CorpusLoader behind a one-method external interface (Retrieve).
 type Pipeline struct {
-	loader   CorpusLoader
-	chunker  Chunker
-	analyzer Analyzer
-	stages   []Stage
+	loader         CorpusLoader
+	chunker        Chunker
+	analyzer       Analyzer
+	stages         []Stage
+	candidateFloor int
+	expandAlpha    float64
 }
 
 // Option configures a Pipeline.
@@ -98,6 +106,12 @@ func WithAnalyzer(a Analyzer) Option {
 	return func(p *Pipeline) { p.analyzer = a }
 }
 
+// WithCandidateFloor sets the BM25 gating pool size N (ADR 0006). On expand
+// iteration i the gate keeps top K = N·(1+α)^i candidates. Default 100.
+func WithCandidateFloor(n int) Option {
+	return func(p *Pipeline) { p.candidateFloor = n }
+}
+
 // WithStages injects the ranking Stages (test seam). Default is BM25 + Structural.
 func WithStages(s ...Stage) Option {
 	return func(p *Pipeline) { p.stages = s }
@@ -106,9 +120,11 @@ func WithStages(s ...Stage) Option {
 // NewPipeline constructs a Pipeline with the given options.
 func NewPipeline(opts ...Option) *Pipeline {
 	p := &Pipeline{
-		chunker:  LineWindowChunker{Window: 50, Overlap: 10},
-		analyzer: SplitPreserveAnalyzer{},
-		stages:   []Stage{BM25Stage{K1: 1.2, B: 0.75}, StructuralStage{Boost: 1.0}},
+		chunker:        LineWindowChunker{Window: 50, Overlap: 10},
+		analyzer:       SplitPreserveAnalyzer{},
+		stages:         []Stage{BM25Stage{K1: 1.2, B: 0.75}, StructuralStage{Boost: 1.0}},
+		candidateFloor: defaultCandidateFloor,
+		expandAlpha:    defaultExpandAlpha,
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -144,6 +160,25 @@ func (p *Pipeline) Retrieve(ctx context.Context, q Query, es ExpandState) (Manif
 		}
 	}
 	stageQuery := StageQuery{Terms: queryTerms, Whole: whole}
+
+	k := float64(p.candidateFloor) * math.Pow(1+p.expandAlpha, float64(es.Iteration))
+	if k > 0 && int(k) < len(candidates) {
+		for _, stage := range p.stages {
+			if s, ok := stage.(BM25Stage); ok {
+				scored, err := s.Rank(stageQuery, candidates)
+				if err != nil {
+					return Manifest{}, err
+				}
+				sort.Slice(scored, func(i, j int) bool { return scored[i].Score > scored[j].Score })
+				n := int(k)
+				candidates = make([]Chunk, n)
+				for i := 0; i < n; i++ {
+					candidates[i] = scored[i].Chunk
+				}
+				break
+			}
+		}
+	}
 
 	scores := make(map[string]float64, len(candidates))
 	key := func(c Chunk) string { return c.Path + ":" + strconv.Itoa(c.LineStart) }
