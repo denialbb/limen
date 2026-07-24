@@ -21,10 +21,6 @@ import (
 // JSON that follows is a state.Verdict.
 const verdictSentinelPrefix = "LIMEN_VERDICT:"
 
-// agyValidatorPrintTimeout bounds agy print mode for validation runs (running
-// the project's tests can take longer than a worker's edit turn).
-const agyValidatorPrintTimeout = "10m"
-
 // validatorDialect describes one agent CLI's launch surface when used as a
 // Level-3 validator. Unlike worker dialects it needs no event decoder: the
 // verdict is carried by the LIMEN_VERDICT stdout sentinel, so the driver only
@@ -38,7 +34,7 @@ type validatorDialect struct {
 // worker flags but keyed on validatorModel, and (like the worker) keeps --print
 // last so the appended prompt is its value.
 func agyValidatorArgs(o *options) []string {
-	args := []string{"agy", "--dangerously-skip-permissions", "--print-timeout", agyValidatorPrintTimeout}
+	args := []string{"agy", "--dangerously-skip-permissions", "--print-timeout", agyPrintTimeout}
 	if o.validatorModel != "" {
 		args = append(args, "--model", o.validatorModel)
 	}

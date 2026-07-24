@@ -72,6 +72,12 @@ claude auth note: no `--bare` (it forces ANTHROPIC_API_KEY and breaks
 OAuth/subscription auth). agy is the thinnest dialect — plain text, no events, so
 only WorkerStarted/WorkerFinished surface.
 
+The per-dialect permission-bypass flags (`--permission-mode bypassPermissions`,
+opencode `--auto`, `--dangerously-skip-permissions`) run the agents unattended
+and sit squarely under the trusted-posture decision (PRD #15): your machine,
+your repo, your task, no sandbox this arc. They are not a new trust assumption —
+just the CLI-specific spelling of the posture already accepted.
+
 ### 3. Agent validator reports via a stdout sentinel, not `submit-verdict`
 
 `agentValidator` (`internal/remote/validator.go`) spawns the validator CLI in
@@ -114,10 +120,14 @@ package is untouched** (the seam's proof).
   `LIMEN_E2E_REAL_AGENTS=1`. A CI-safe integration test drives a fixture to
   `COMMITTED` with a fake claude worker + fake agy validator, exercising the
   reject→revise→commit loop.
-- Open item: claude's `--input-format stream-json` was only exercised against a
-  file-EOF in the spike (which mishandled instant EOF); the driver keeps the
-  stdin pipe open and closes on `result`, matching the proven pi path. Real
-  claude e2e verifies it under `LIMEN_E2E_REAL_AGENTS=1`. Argv delivery
-  (`claude -p "<prompt>"`) is the proven fallback if needed.
+- Resolved (was: claude stdin open item): the spike only exercised
+  `--input-format stream-json` against a file-EOF, which mishandled instant EOF.
+  The driver instead keeps the stdin pipe open and closes on `result`, matching
+  the proven pi path. The gated real-binary suite
+  (`LIMEN_E2E_REAL_AGENTS=1 go test ./internal/remote/ -run RealBinary`) passed
+  on 2026-07-24 against claude 2.1.195, opencode 1.18.4, and agy 1.1.5 — all four
+  cases green, including claude's stdin keep-open path (~28s) and a genuine agy
+  validator verdict (~28s). Argv delivery (`claude -p "<prompt>"`) remains the
+  documented fallback but was not needed.
 - Non-goals (unchanged): session resume across retries, git-poll breadcrumbs,
   MCP server, sandboxing (trusted posture, PRD #15), opencode `serve`/ACP.

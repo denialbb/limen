@@ -6,8 +6,11 @@ import (
 	"github.com/denialbb/limen/internal/orchestrator"
 )
 
-// agyPrintTimeout is the wait bound passed to `agy --print-timeout`. It is a Go
-// duration string; agy's own default is 5m0s, widened here for real worker runs.
+// agyPrintTimeout is the wait bound passed to `agy --print-timeout`, shared by
+// the agy worker and the agy validator. It is a Go duration string; agy's own
+// default is 5m0s, widened here for real runs. If the validator's timeout is
+// ever split out from the worker's, keep it >= the worker's — validation runs
+// the project's tests, which take longer than a worker's edit turn.
 const agyPrintTimeout = "10m"
 
 // agyCommandArgs builds the argv to launch agy in headless print mode.

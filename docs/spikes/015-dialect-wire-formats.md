@@ -43,6 +43,12 @@ OPEN (StdinPipe) and closes it only after the `result` event, exactly as
 piWorker does on `agent_end`. The output wire format above is identical
 regardless of how the prompt is delivered.
 
+Resolved (2026-07-24): the file-EOF failure was an artifact of the file
+redirect, not the format. The generic driver keeps the stdin pipe open and
+closes on `result`, and the gated real-binary suite passed against claude
+2.1.195 (stdin keep-open confirmed end-to-end). The argv fallback below was not
+needed.
+
 Fallback if stdin-keep-open proves flaky in slice 2: deliver the prompt as argv
 (`claude -p "<prompt>" --output-format stream-json --verbose`). This was proven
 end-to-end here (init → assistant thinking → tool_use → tool_result → assistant

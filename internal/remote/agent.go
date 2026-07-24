@@ -191,6 +191,10 @@ func (w *agentWorker) ProduceSolution(ctx context.Context, task *state.Task, wt 
 	for scanner.Scan() {
 		res := w.dialect.decode(scanner.Text(), task.ID, time.Now())
 		if res.end {
+			// NOTE: any res.events on the end line are intentionally dropped — no
+			// dialect emits both events and end on one line today (pi's agent_end /
+			// claude's result carry no worker events). A future dialect that does
+			// must publish res.events here before breaking.
 			// Signal EOF so the RPC CLI can exit cleanly rather than blocking on
 			// stdin.
 			stdin.Close()
