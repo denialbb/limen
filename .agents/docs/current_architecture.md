@@ -34,14 +34,22 @@ P1: limen run-task  (orchestrator, parent)
                        └─ bash tool runs ─► limen submit-verdict
 ```
 
-P1, P3, PV share no memory — only SQLite + filesystem. All cross-process signaling is SQLite-mediated via a signaling table.
+P1, P3, PV share no memory — only SQLite + filesystem. The worker's ready/verdict handshake (P3) is SQLite-mediated via a signaling table. The validator path shown (`submit-verdict`) is the autonomous topology; the default `agentValidator` instead reports a `LIMEN_VERDICT` stdout sentinel that P1 parses and records, so P1 owns verdict recording (ADR 0009).
 
 ## Driver Seam
 
-The `orchestrator.Worker` and `orchestrator.Validator` interfaces are synchronous-blocking from the orchestrator's view. There are two primary drivers:
+The `orchestrator.Worker` and `orchestrator.Validator` interfaces are synchronous-blocking from the orchestrator's view. Cognition is CLI-agnostic: any headless coding-agent CLI is pluggable per-role at the wiring site (`--worker-backend`, `--validator-backend`), with the orchestrator untouched (ADR 0009).
 
-- **Pi driver** (default): drives `pi --mode rpc`; the blocking `ready-for-review` callback owns the revision loop.
-- **MCP / spawn-and-callback driver** (fallback): spawns a model-gated CLI, serves the callback (CLI-via-bash or MCP tool), blocks until the verdict lands.
+**Worker** — a single generic `agentWorker` driver (`internal/remote/agent.go`) parameterized by a `dialect` (argv builder, optional stdin-prompt encoder, pure line decoder, constraint block). Two families share it:
+
+- **RPC family** (pi, claude stream-json): prompt written to stdin, process stays alive, rich per-line events, explicit end event (`agent_end` / `result`) closes stdin.
+- **One-shot family** (opencode, agy): prompt in argv, stdin closed, stdout scanned to EOF.
+
+In-process revision is free on all CLIs: the blocking `limen ready-for-review` bash call holds the agent loop open across verdict rounds. Each dialect owns only its constraint block; `renderWorkerPrompt` owns the shared contract (task, ADR-0007 context manifest, ready-for-review). Supported: `pi`, `claude`, `opencode`, `agy` (plus the `cli`/`mock` placeholders).
+
+**Validator** — `agentValidator` spawns a validator CLI in the throwaway worktree with a Level-3 prompt (inspect diff, run tests) and parses the last `LIMEN_VERDICT: {"passes":...,"feedback":...}` stdout sentinel. The stdout sentinel (not `submit-verdict`) keeps verdict recording with the orchestrator, avoiding the callback race in the synchronous `Evaluate` flow. Supported: `shell` (cliValidator), `agy`, `claude`, `opencode` (plus `mock`).
+
+**Decision: CLI subprocess + `limen` callbacks, no MCP server** (ADR 0009). The `limen` binary is already the tool surface for every bash-capable agent; MCP would cover only the callback channel while prompt delivery, lifecycle, and observability stay per-CLI. Revisit trigger: an agent with no shell execution, or a pull-model retrieval contract.
 
 ## Safety & Sandboxing
 
