@@ -33,8 +33,12 @@ from `expandCount`. On the first pass `Iteration == 0`.
 
 - First pass: BM25 keeps top-`N` candidates (N ≥ 10, default N = 100) to feed
   the structural stage and the final top-10 cut.
-- On EXPAND iteration `i`: keep `N · (1 + α^i)` candidates (α ≈ 0.5),
-  half-again more fed to the structural stage each iteration.
+- On EXPAND iteration `i`: keep `N · (1 + α)^i` candidates (α ≈ 0.5),
+  half-again more fed to the structural stage each iteration (compound: i=0→N,
+  i=1→1.5N, i=2→2.25N, ...). The literal formula `N·(1+α^i)` written in earlier
+  drafts was a typo — it decreases with i (narrowing on expand) and contradicts
+  both the EXPAND contract and this ADR's prose; the compound form matches
+  "half-again more each iteration."
 - Manifest top-k stays 10 (ADR 0004). EXPAND changes *which* chunks surface
   in the top-10, drawn from a wider pool — not *how many*.
 
@@ -89,4 +93,5 @@ Widen:
   structural stage's signal is what EXPAND exists to let through.
 - α and N are Stage-impl configuration, sharing the Q7 meta-rule (cutpoints
   as config, not constants); α's default (0.5) lives alongside
-  `coverage_floor` / `confidence_floor`.
+  `coverage_floor` / `confidence_floor`. Pool size = `N · (1+α)^Iteration`
+  (compound widen; see Decision).
