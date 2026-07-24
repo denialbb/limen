@@ -14,6 +14,7 @@ import (
 	"github.com/denialbb/limen/internal/bus"
 	"github.com/denialbb/limen/internal/git"
 	"github.com/denialbb/limen/internal/orchestrator"
+	"github.com/denialbb/limen/internal/retrieval"
 	"github.com/denialbb/limen/internal/state"
 )
 
@@ -109,11 +110,19 @@ func (w *piWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *gi
 		})
 	}
 
+	// Render context section from the retrieval manifest when available (ADR 0007).
+	contextSection := ""
+	if task.ContextSnapshot != "" {
+		if manifest, err := retrieval.ParseManifest(task.ContextSnapshot); err == nil && len(manifest.Chunks) > 0 {
+			contextSection = "\n\n" + retrieval.RenderContextSection(manifest)
+		}
+	}
+
 	promptText := fmt.Sprintf(
-		"Task ID: %s\n\nTask: %s\n\nIMPORTANT CONSTRAINTS:\n"+
+		"Task ID: %s\n\nTask: %s%s\n\nIMPORTANT CONSTRAINTS:\n"+
 			"- Do NOT use the edit tool — it does not work in this environment. Use bash commands (sed, awk, python, or direct file writes) for all file modifications.\n"+
 			"- When you are finished, you MUST run: `limen ready-for-review --task-id %s --summary \"<summary>\"`. Wait for the verdict. If approved, you can finish. If rejected with feedback, revise your work and call ready-for-review again.",
-		task.ID, task.Prompt, task.ID,
+		task.ID, task.Prompt, contextSection, task.ID,
 	)
 	if feedback != "" {
 		promptText += fmt.Sprintf("\n\nPrevious feedback:\n%s", feedback)

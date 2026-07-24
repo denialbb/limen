@@ -10,6 +10,7 @@ import (
 
 	"github.com/denialbb/limen/internal/bus"
 	"github.com/denialbb/limen/internal/git"
+	"github.com/denialbb/limen/internal/retrieval"
 	"github.com/denialbb/limen/internal/state"
 )
 
@@ -49,7 +50,7 @@ type Router interface {
 
 // Retriever builds the ephemeral retrieval context for a task.
 type Retriever interface {
-	Retrieve(ctx context.Context, task *state.Task, em Emitter) (string, error)
+	Retrieve(ctx context.Context, task *state.Task, es retrieval.ExpandState, em Emitter) (string, error)
 }
 
 // Worker is responsible for generating candidate solutions in an isolated worktree.
@@ -201,7 +202,7 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 		// then atomically transition to CONTEXT_BUILDING and record the
 		// snapshot. This eliminates the crash window between the state
 		// transition and the snapshot write (BUG #3).
-		contextSnapshot, err := o.retriever.Retrieve(ctx, task, em)
+		contextSnapshot, err := o.retriever.Retrieve(ctx, task, retrieval.ExpandState{Iteration: expandCount}, em)
 		if err != nil {
 			return err
 		}

@@ -16,6 +16,7 @@ import (
 	"github.com/denialbb/limen/internal/bus"
 	"github.com/denialbb/limen/internal/git"
 	"github.com/denialbb/limen/internal/orchestrator"
+	"github.com/denialbb/limen/internal/retrieval"
 	"github.com/denialbb/limen/internal/state"
 )
 
@@ -61,7 +62,7 @@ func (r *dummyRouter) Evaluate(ctx context.Context, task *state.Task, em orchest
 
 type dummyRetriever struct{}
 
-func (r *dummyRetriever) Retrieve(ctx context.Context, task *state.Task, em orchestrator.Emitter) (string, error) {
+func (r *dummyRetriever) Retrieve(ctx context.Context, task *state.Task, es retrieval.ExpandState, em orchestrator.Emitter) (string, error) {
 	return "dummy-context", nil
 }
 

@@ -13,6 +13,7 @@ import (
 	"github.com/denialbb/limen/internal/bus"
 	"github.com/denialbb/limen/internal/git"
 	"github.com/denialbb/limen/internal/orchestrator"
+	"github.com/denialbb/limen/internal/retrieval"
 	"github.com/denialbb/limen/internal/state"
 )
 
@@ -172,7 +173,7 @@ func (m *mockRouter) Evaluate(ctx context.Context, task *state.Task, em orchestr
 
 type mockRetriever struct{}
 
-func (m *mockRetriever) Retrieve(ctx context.Context, task *state.Task, em orchestrator.Emitter) (string, error) {
+func (m *mockRetriever) Retrieve(ctx context.Context, task *state.Task, es retrieval.ExpandState, em orchestrator.Emitter) (string, error) {
 	return "mock-context", nil
 }
 

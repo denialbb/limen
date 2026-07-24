@@ -21,6 +21,7 @@ import (
 	"github.com/denialbb/limen/internal/git"
 	"github.com/denialbb/limen/internal/orchestrator"
 	"github.com/denialbb/limen/internal/remote"
+	"github.com/denialbb/limen/internal/retrieval"
 	"github.com/denialbb/limen/internal/state"
 	"github.com/denialbb/limen/internal/tui"
 )
@@ -53,7 +54,7 @@ func (c *cliRouter) Evaluate(ctx context.Context, task *state.Task, em orchestra
 // TODO: Replace with the real progressive retrieval pipeline (BM25 + semantic).
 type cliRetriever struct{}
 
-func (c *cliRetriever) Retrieve(ctx context.Context, task *state.Task, em orchestrator.Emitter) (string, error) {
+func (c *cliRetriever) Retrieve(ctx context.Context, task *state.Task, es retrieval.ExpandState, em orchestrator.Emitter) (string, error) {
 	// NOTE: Snapshot size is 0 because the placeholder retriever emits no
 	// manifest yet; the real pipeline will populate this from the assembled
 	// retrieval context.
