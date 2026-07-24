@@ -231,7 +231,24 @@ type runtimeWiring struct {
 	logDir       string
 }
 
-func newRuntimeWiring(repoPath string, mock bool, mockTranscript, workerBackend, workerPiProvider, workerPiModel, validatorCmd string, coverageFloor, confidenceFloor float64) runtimeWiring {
+// wiringOptions carries the backend-selection knobs from flag parsing into
+// newRuntimeWiring, keeping the run-task call chain from ballooning into a
+// dozen positional parameters as new dialects land (issue 015).
+type wiringOptions struct {
+	mock             bool
+	mockTranscript   string
+	workerBackend    string
+	workerPiProvider string
+	workerPiModel    string
+	workerModel      string
+	validatorBackend string
+	validatorCmd     string
+	validatorModel   string
+	coverageFloor    float64
+	confidenceFloor  float64
+}
+
+func newRuntimeWiring(repoPath string, wo wiringOptions) runtimeWiring {
 	manager := git.NewWorktreeManager(repoPath, detectDefaultBranch(repoPath))
 	worktreeRoot, err := filepath.Abs(filepath.Join(repoPath, ".limen", "worktrees"))
 	if err != nil {
@@ -239,28 +256,62 @@ func newRuntimeWiring(repoPath string, mock bool, mockTranscript, workerBackend,
 	}
 	logDir := filepath.Join(repoPath, ".limen", "logs")
 	w := runtimeWiring{gitClient: manager, worktreeRoot: worktreeRoot, logDir: logDir}
-	if mock {
-		w.router = remote.NewRouter([]string{"python", "-m", "limen.mock.router", mockTranscript}, remote.WithLogDir(logDir))
+	if wo.mock {
+		w.router = remote.NewRouter([]string{"python", "-m", "limen.mock.router", wo.mockTranscript}, remote.WithLogDir(logDir))
 		w.retriever = &cliRetriever{}
-		w.worker = remote.NewWorker([]string{"python", "-m", "limen.mock.worker", mockTranscript}, remote.WithLogDir(logDir))
-		w.validator = remote.NewValidator([]string{"python", "-m", "limen.mock.validator", mockTranscript}, manager, remote.WithLogDir(logDir))
+		w.worker = remote.NewWorker([]string{"python", "-m", "limen.mock.worker", wo.mockTranscript}, remote.WithLogDir(logDir))
+		w.validator = remote.NewValidator([]string{"python", "-m", "limen.mock.validator", wo.mockTranscript}, manager, remote.WithLogDir(logDir))
 		return w
 	}
-	w.router = rtr.NewRouter(coverageFloor, confidenceFloor)
+	w.router = rtr.NewRouter(wo.coverageFloor, wo.confidenceFloor)
 	w.retriever = &pipelineRetriever{pipeline: retrieval.NewPipeline(
 		retrieval.WithCorpusLoader(&retrieval.GitCorpusLoader{RepoPath: repoPath}),
 	)}
-	if workerBackend == "pi" {
-		w.worker = remote.NewPiWorker(
-			remote.WithLogDir(logDir),
-			remote.WithPiProvider(workerPiProvider),
-			remote.WithPiModel(workerPiModel),
-		)
-	} else {
-		w.worker = &cliWorker{}
-	}
-	w.validator = &cliValidator{cmd: validatorCmd, logDir: logDir}
+	w.worker = selectWorker(wo, logDir, manager)
+	w.validator = selectValidator(wo, logDir, manager)
 	return w
+}
+
+// selectWorker maps --worker-backend to a concrete orchestrator.Worker. The
+// dialect drivers (claude, opencode, agy) live behind the generic agentWorker
+// seam (issue 015); pi and the placeholder cliWorker are unchanged.
+func selectWorker(wo wiringOptions, logDir string, manager orchestrator.GitClient) orchestrator.Worker {
+	switch wo.workerBackend {
+	case "claude":
+		return remote.NewClaudeWorker(remote.WithLogDir(logDir), remote.WithWorkerModel(wo.workerModel))
+	case "opencode":
+		return remote.NewOpencodeWorker(remote.WithLogDir(logDir), remote.WithWorkerModel(wo.workerModel))
+	case "agy":
+		return remote.NewAgyWorker(remote.WithLogDir(logDir), remote.WithWorkerModel(wo.workerModel))
+	case "mock":
+		return remote.NewWorker([]string{"python", "-m", "limen.mock.worker", wo.mockTranscript}, remote.WithLogDir(logDir))
+	case "pi":
+		return remote.NewPiWorker(
+			remote.WithLogDir(logDir),
+			remote.WithPiProvider(wo.workerPiProvider),
+			remote.WithPiModel(wo.workerPiModel),
+		)
+	default:
+		return &cliWorker{}
+	}
+}
+
+// selectValidator maps --validator-backend to a concrete orchestrator.Validator.
+// "shell" is the current cliValidator (shell-command gate); the agent
+// validators report via the LIMEN_VERDICT stdout sentinel (issue 015).
+func selectValidator(wo wiringOptions, logDir string, manager orchestrator.GitClient) orchestrator.Validator {
+	switch wo.validatorBackend {
+	case "agy":
+		return remote.NewAgyValidator(remote.WithLogDir(logDir), remote.WithValidatorModel(wo.validatorModel))
+	case "claude":
+		return remote.NewClaudeValidator(remote.WithLogDir(logDir), remote.WithValidatorModel(wo.validatorModel))
+	case "opencode":
+		return remote.NewOpencodeValidator(remote.WithLogDir(logDir), remote.WithValidatorModel(wo.validatorModel))
+	case "mock":
+		return remote.NewValidator([]string{"python", "-m", "limen.mock.validator", wo.mockTranscript}, manager, remote.WithLogDir(logDir))
+	default: // "shell"
+		return &cliValidator{cmd: wo.validatorCmd, logDir: logDir}
+	}
 }
 
 // runTUICmd launches the interactive terminal UI.
@@ -274,20 +325,46 @@ func newRuntimeWiring(repoPath string, mock bool, mockTranscript, workerBackend,
 // If stdout is not a TTY (piped output, CI runners, non-interactive shells),
 // Bubble Tea is skipped and the run-task log-style output path is used
 // instead. This keeps the bare invocation safe for scripts and CI.
+// registerWiringFlags registers the shared backend-selection flags on fs and
+// returns a builder that materializes them into a wiringOptions after Parse.
+// Shared by run-task and the default TUI entry point so both expose the same
+// --worker-backend / --validator-backend surface (issue 015).
+func registerWiringFlags(fs *flag.FlagSet) func() wiringOptions {
+	mockFlag := fs.Bool("mock", true, "Use Python mock backend for cognitive components")
+	mockTranscript := fs.String("mock-transcript", "src/limen/mock/transcripts/spike.json", "Path to the mock transcript JSON file")
+	workerBackend := fs.String("worker-backend", "pi", "Worker backend: pi, claude, opencode, agy, cli, mock")
+	workerPiProvider := fs.String("worker-pi-provider", "", "Provider for the pi worker (e.g. mistral, openai)")
+	workerPiModel := fs.String("worker-pi-model", "", "Model for the pi worker (e.g. codestral-latest)")
+	workerModel := fs.String("worker-model", "", "Model for the claude/opencode/agy worker (mapped to each dialect's own flag)")
+	validatorBackend := fs.String("validator-backend", "shell", "Validator backend: shell, agy, claude, opencode, mock")
+	validatorCmd := fs.String("validator-cmd", "", "Command to run for the shell validator")
+	validatorModel := fs.String("validator-model", "", "Model for the agy/claude/opencode validator")
+	coverageFloor := fs.Float64("coverage-floor", -1, "Coverage threshold for the router cascade (default: 0.60, set to 0 to force PROCEED)")
+	confidenceFloor := fs.Float64("confidence-floor", -1, "Confidence threshold for the router cascade (default: 0.50, set to 0 to force PROCEED)")
+	return func() wiringOptions {
+		return wiringOptions{
+			mock:             *mockFlag,
+			mockTranscript:   *mockTranscript,
+			workerBackend:    *workerBackend,
+			workerPiProvider: *workerPiProvider,
+			workerPiModel:    *workerPiModel,
+			workerModel:      *workerModel,
+			validatorBackend: *validatorBackend,
+			validatorCmd:     *validatorCmd,
+			validatorModel:   *validatorModel,
+			coverageFloor:    *coverageFloor,
+			confidenceFloor:  *confidenceFloor,
+		}
+	}
+}
+
 func runTUICmd() {
 	tuiFlags := flag.NewFlagSet("tui", flag.ExitOnError)
 	taskID := tuiFlags.String("task-id", "", "The ID of the task to run")
 	prompt := tuiFlags.String("prompt", "", "The initial prompt for the task")
 	dbPath := tuiFlags.String("db-path", "", "Path to the SQLite database (default: <repo-path>/limen.db)")
 	repoPath := tuiFlags.String("repo-path", ".", "Path to the target git repository")
-	mockFlag := tuiFlags.Bool("mock", true, "Use Python mock backend for cognitive components")
-	mockTranscript := tuiFlags.String("mock-transcript", "src/limen/mock/transcripts/spike.json", "Path to the mock transcript JSON file")
-	workerBackend := tuiFlags.String("worker-backend", "pi", "Backend to use for the worker (pi, cli, mock)")
-	workerPiProvider := tuiFlags.String("worker-pi-provider", "", "Provider for the pi worker (e.g. mistral, openai)")
-	workerPiModel := tuiFlags.String("worker-pi-model", "", "Model for the pi worker (e.g. codestral-latest)")
-	validatorCmd := tuiFlags.String("validator-cmd", "", "Command to run for cli validator")
-	coverageFloor := tuiFlags.Float64("coverage-floor", -1, "Coverage threshold for the router cascade (default: 0.60, set to 0 to force PROCEED)")
-	confidenceFloor := tuiFlags.Float64("confidence-floor", -1, "Confidence threshold for the router cascade (default: 0.50, set to 0 to force PROCEED)")
+	buildWiring := registerWiringFlags(tuiFlags)
 
 	if err := tuiFlags.Parse(os.Args[2:]); err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
@@ -310,12 +387,13 @@ func runTUICmd() {
 		*dbPath = filepath.Join(*repoPath, "limen.db")
 	}
 
+	wo := buildWiring()
 	if !isTTY(os.Stdout.Fd()) {
-		runTaskOneShot(*taskID, *prompt, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend, *workerPiProvider, *workerPiModel, *validatorCmd, *coverageFloor, *confidenceFloor)
+		runTaskOneShot(*taskID, *prompt, *dbPath, *repoPath, wo)
 		return
 	}
 
-	runTaskInteractive(*taskID, *prompt, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend, *workerPiProvider, *workerPiModel, *validatorCmd, *coverageFloor, *confidenceFloor)
+	runTaskInteractive(*taskID, *prompt, *dbPath, *repoPath, wo)
 }
 
 // isTTY reports whether the given file descriptor is an interactive terminal.
@@ -342,7 +420,7 @@ func detectDefaultBranch(repoPath string) string {
 // Bubble Tea program in the foreground. After the program exits, a single
 // final-state line is printed so scripts that parse the trailing output still
 // get the outcome.
-func runTaskInteractive(taskID, prompt, dbPath, repoPath string, mock bool, mockTranscript string, workerBackend, workerPiProvider, workerPiModel string, validatorCmd string, coverageFloor, confidenceFloor float64) {
+func runTaskInteractive(taskID, prompt, dbPath, repoPath string, wo wiringOptions) {
 	store, err := state.NewSQLiteStore(dbPath)
 	if err != nil {
 		log.Fatalf("Failed to initialize SQLite store: %v", err)
@@ -351,7 +429,7 @@ func runTaskInteractive(taskID, prompt, dbPath, repoPath string, mock bool, mock
 
 	_ = registerDBPath(taskID, dbPath)
 
-	rw := newRuntimeWiring(repoPath, mock, mockTranscript, workerBackend, workerPiProvider, workerPiModel, validatorCmd, coverageFloor, confidenceFloor)
+	rw := newRuntimeWiring(repoPath, wo)
 	eventBus := bus.NewChannelBus()
 	defer eventBus.Close()
 
@@ -417,7 +495,7 @@ func runTaskInteractive(taskID, prompt, dbPath, repoPath string, mock bool, mock
 // creation, RunTask execution, and final state logging. Both the explicit
 // `run-task` subcommand and the non-TTY fallback from `runTUICmd` delegate here
 // to avoid duplicating the setup and teardown logic.
-func runTaskWithConfig(taskID, prompt, dbPath, repoPath string, mock bool, mockTranscript string, workerBackend, workerPiProvider, workerPiModel string, validatorCmd string, coverageFloor, confidenceFloor float64) {
+func runTaskWithConfig(taskID, prompt, dbPath, repoPath string, wo wiringOptions) {
 	store, err := state.NewSQLiteStore(dbPath)
 	if err != nil {
 		log.Fatalf("Failed to initialize SQLite store: %v", err)
@@ -426,7 +504,7 @@ func runTaskWithConfig(taskID, prompt, dbPath, repoPath string, mock bool, mockT
 
 	_ = registerDBPath(taskID, dbPath)
 
-	rw := newRuntimeWiring(repoPath, mock, mockTranscript, workerBackend, workerPiProvider, workerPiModel, validatorCmd, coverageFloor, confidenceFloor)
+	rw := newRuntimeWiring(repoPath, wo)
 	eventBus := bus.NewChannelBus()
 	defer eventBus.Close()
 
@@ -456,8 +534,8 @@ func runTaskWithConfig(taskID, prompt, dbPath, repoPath string, mock bool, mockT
 
 // runTaskOneShot is the non-TTY fallback. It reuses the run-task log-style
 // output and shares the same setup path as the explicit `run-task` subcommand.
-func runTaskOneShot(taskID, prompt, dbPath, repoPath string, mock bool, mockTranscript string, workerBackend, workerPiProvider, workerPiModel string, validatorCmd string, coverageFloor, confidenceFloor float64) {
-	runTaskWithConfig(taskID, prompt, dbPath, repoPath, mock, mockTranscript, workerBackend, workerPiProvider, workerPiModel, validatorCmd, coverageFloor, confidenceFloor)
+func runTaskOneShot(taskID, prompt, dbPath, repoPath string, wo wiringOptions) {
+	runTaskWithConfig(taskID, prompt, dbPath, repoPath, wo)
 }
 
 func runTaskCmd() {
@@ -466,14 +544,7 @@ func runTaskCmd() {
 	prompt := runTaskFlags.String("prompt", "", "The initial prompt for the task")
 	dbPath := runTaskFlags.String("db-path", "", "Path to the SQLite database (default: <repo-path>/limen.db)")
 	repoPath := runTaskFlags.String("repo-path", ".", "Path to the target git repository")
-	mockFlag := runTaskFlags.Bool("mock", true, "Use Python mock backend for cognitive components")
-	mockTranscript := runTaskFlags.String("mock-transcript", "src/limen/mock/transcripts/spike.json", "Path to the mock transcript JSON file")
-	workerBackend := runTaskFlags.String("worker-backend", "pi", "Backend to use for the worker (pi, cli, mock)")
-	workerPiProvider := runTaskFlags.String("worker-pi-provider", "", "Provider for the pi worker (e.g. mistral, openai)")
-	workerPiModel := runTaskFlags.String("worker-pi-model", "", "Model for the pi worker (e.g. codestral-latest)")
-	validatorCmd := runTaskFlags.String("validator-cmd", "", "Command to run for cli validator")
-	coverageFloor := runTaskFlags.Float64("coverage-floor", -1, "Coverage threshold for the router cascade (default: 0.60, set to 0 to force PROCEED)")
-	confidenceFloor := runTaskFlags.Float64("confidence-floor", -1, "Confidence threshold for the router cascade (default: 0.50, set to 0 to force PROCEED)")
+	buildWiring := registerWiringFlags(runTaskFlags)
 
 	if err := runTaskFlags.Parse(os.Args[2:]); err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
@@ -496,7 +567,7 @@ func runTaskCmd() {
 		*dbPath = filepath.Join(*repoPath, "limen.db")
 	}
 
-	runTaskWithConfig(*taskID, *prompt, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend, *workerPiProvider, *workerPiModel, *validatorCmd, *coverageFloor, *confidenceFloor)
+	runTaskWithConfig(*taskID, *prompt, *dbPath, *repoPath, buildWiring())
 }
 
 func runReadyForReviewCmd() {

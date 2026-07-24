@@ -51,6 +51,56 @@ func agyValidatorDialect() validatorDialect {
 	return validatorDialect{name: "agy", baseArgs: agyValidatorArgs}
 }
 
+// claudeValidatorArgs runs claude as a validator in plain-text print mode (no
+// stream-json), so the LIMEN_VERDICT sentinel appears as a raw stdout line. -p
+// takes the prompt as its trailing positional; the driver appends it.
+func claudeValidatorArgs(o *options) []string {
+	args := []string{"claude", "-p", "--permission-mode", "bypassPermissions"}
+	if o.validatorModel != "" {
+		args = append(args, "--model", o.validatorModel)
+	}
+	return args
+}
+
+// claudeValidatorDialect is the claude Level-3 validator dialect.
+func claudeValidatorDialect() validatorDialect {
+	return validatorDialect{name: "claude", baseArgs: claudeValidatorArgs}
+}
+
+// opencodeValidatorArgs runs opencode as a validator in its default (text)
+// output mode so the sentinel appears in stdout; the driver appends the prompt
+// as the positional message.
+func opencodeValidatorArgs(o *options) []string {
+	args := []string{"opencode", "run", "--auto"}
+	if o.validatorModel != "" {
+		args = append(args, "-m", o.validatorModel)
+	}
+	return args
+}
+
+// opencodeValidatorDialect is the opencode Level-3 validator dialect.
+func opencodeValidatorDialect() validatorDialect {
+	return validatorDialect{name: "opencode", baseArgs: opencodeValidatorArgs}
+}
+
+// NewClaudeValidator constructs a claude-backed Level-3 validator.
+func NewClaudeValidator(opts ...Option) orchestrator.Validator {
+	o := defaultOptions()
+	for _, opt := range opts {
+		opt(o)
+	}
+	return newAgentValidator(claudeValidatorDialect(), o)
+}
+
+// NewOpencodeValidator constructs an opencode-backed Level-3 validator.
+func NewOpencodeValidator(opts ...Option) orchestrator.Validator {
+	o := defaultOptions()
+	for _, opt := range opts {
+		opt(o)
+	}
+	return newAgentValidator(opencodeValidatorDialect(), o)
+}
+
 // agentValidator implements orchestrator.Validator by spawning a headless agent
 // CLI in the throwaway validator worktree with a Level-3 prompt (inspect the
 // diff, run the tests) and parsing the LIMEN_VERDICT sentinel from its stdout.

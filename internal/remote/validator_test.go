@@ -166,6 +166,36 @@ func TestRenderValidatorPromptContract(t *testing.T) {
 	}
 }
 
+func TestValidatorDialectArgs(t *testing.T) {
+	o := defaultOptions()
+	o.validatorModel = "M"
+
+	agy := agyValidatorArgs(o)
+	if agy[len(agy)-1] != "--print" {
+		t.Fatalf("agy validator: --print must be last, got %v", agy)
+	}
+	if !contains(agy, "--model") || !contains(agy, "M") {
+		t.Fatalf("agy validator: missing model, got %v", agy)
+	}
+
+	cl := claudeValidatorArgs(o)
+	// Plain-text output (no stream-json) so the sentinel is a raw stdout line.
+	if contains(cl, "stream-json") {
+		t.Fatalf("claude validator must not use stream-json, got %v", cl)
+	}
+	if !contains(cl, "-p") || !contains(cl, "bypassPermissions") {
+		t.Fatalf("claude validator: missing required flags, got %v", cl)
+	}
+
+	oc := opencodeValidatorArgs(o)
+	if contains(oc, "--format") {
+		t.Fatalf("opencode validator uses default text format, got %v", oc)
+	}
+	if !contains(oc, "run") || !contains(oc, "--auto") {
+		t.Fatalf("opencode validator: missing required flags, got %v", oc)
+	}
+}
+
 func TestAgyValidatorRealBinary(t *testing.T) {
 	if os.Getenv("LIMEN_E2E_REAL_AGENTS") != "1" {
 		t.Skip("set LIMEN_E2E_REAL_AGENTS=1 to run real-agent e2e")
