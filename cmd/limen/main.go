@@ -22,42 +22,39 @@ import (
 	"github.com/denialbb/limen/internal/orchestrator"
 	"github.com/denialbb/limen/internal/remote"
 	"github.com/denialbb/limen/internal/retrieval"
+	rtr "github.com/denialbb/limen/internal/router"
 	"github.com/denialbb/limen/internal/state"
 	"github.com/denialbb/limen/internal/tui"
 )
 
-// cliRouter is a placeholder router that always proceeds.
-// TODO: Replace with the real routing heuristic or LLM evaluator.
-type cliRouter struct{}
-
-func (c *cliRouter) Evaluate(ctx context.Context, task *state.Task, em orchestrator.Emitter) (orchestrator.RouterDecision, error) {
-	// NOTE: Synthetic event stream per the v1 de-risking plan: emit the full
-	// Router taxonomy so the TUI has something to render before the real
-	// Python L1 client exists.
-	em.Publish(&bus.RouterExamining{
-		TaskID:         task.ID,
-		ContextExcerpt: "(placeholder context)",
-		Entropy:        0.0,
-		Timestamp:      time.Now(),
-	})
-	em.Publish(&bus.RouterDecisionEvent{
-		TaskID:      task.ID,
-		Decision:    bus.DecisionProceed,
-		Rationale:   "placeholder router always proceeds",
-		ExpandCount: 0,
-		Timestamp:   time.Now(),
-	})
-	return orchestrator.DecisionProceed, nil
+// pipelineRetriever adapts retrieval.Pipeline to the orchestrator.Retriever interface.
+type pipelineRetriever struct {
+	pipeline *retrieval.Pipeline
 }
 
-// cliRetriever is a placeholder retriever that returns an empty context manifest.
-// TODO: Replace with the real progressive retrieval pipeline (BM25 + semantic).
+func (r *pipelineRetriever) Retrieve(ctx context.Context, task *state.Task, es retrieval.ExpandState, em orchestrator.Emitter) (string, error) {
+	manifest, err := r.pipeline.Retrieve(ctx, retrieval.Query{Text: task.Prompt, TaskID: task.ID}, es)
+	if err != nil {
+		return "", err
+	}
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		return "", err
+	}
+	em.Publish(&bus.ContextBuilt{
+		TaskID:       task.ID,
+		SnapshotSize: len(raw),
+		ManifestRef:  manifest.QueryID,
+		Timestamp:    time.Now(),
+	})
+	return string(raw), nil
+}
+
+// cliRetriever returns an empty manifest and is the mock-path placeholder;
+// the real progressive retrieval pipeline lives in pipelineRetriever.
 type cliRetriever struct{}
 
 func (c *cliRetriever) Retrieve(ctx context.Context, task *state.Task, es retrieval.ExpandState, em orchestrator.Emitter) (string, error) {
-	// NOTE: Snapshot size is 0 because the placeholder retriever emits no
-	// manifest yet; the real pipeline will populate this from the assembled
-	// retrieval context.
 	em.Publish(&bus.ContextBuilt{
 		TaskID:       task.ID,
 		SnapshotSize: 0,
@@ -67,16 +64,14 @@ func (c *cliRetriever) Retrieve(ctx context.Context, task *state.Task, es retrie
 	return "", nil
 }
 
-// cliWorker is a placeholder worker that logs and does nothing.
-// TODO: Replace with the real LLM-backed worker.
+// cliWorker is a non-pi fallback worker that writes a placeholder solution
+// and emits the Worker event taxonomy so the loop runs end-to-end without an
+// LLM worker.
 type cliWorker struct{}
 
-// ProduceSolution implements the worker interface.
 func (c *cliWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *git.Worktree, feedback string, em orchestrator.Emitter) error {
 	log.Printf("Worker producing solution for task %s", task.ID)
 
-	// NOTE: Synthetic Worker taxonomy stream so the TUI shows realistic
-	// activity while the Python L2 client is still a TODO stub.
 	em.Publish(&bus.WorkerStarted{
 		TaskID:       task.ID,
 		WorktreePath: wt.Path,
@@ -110,8 +105,8 @@ func (c *cliWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *g
 	return nil
 }
 
-// cliValidator is a placeholder validator that always passes.
-// TODO: Replace with the real L3 validator.
+// cliValidator runs a shell command in the worktree as the validation gate
+// and emits the Validator event taxonomy.
 type cliValidator struct {
 	cmd    string
 	logDir string
@@ -226,6 +221,48 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  limen submit-verdict   Record a validation verdict and unblock ready-for-review\n")
 }
 
+type runtimeWiring struct {
+	router       orchestrator.Router
+	retriever    orchestrator.Retriever
+	worker       orchestrator.Worker
+	validator    orchestrator.Validator
+	gitClient    orchestrator.GitClient
+	worktreeRoot string
+	logDir       string
+}
+
+func newRuntimeWiring(repoPath string, mock bool, mockTranscript, workerBackend, workerPiProvider, workerPiModel, validatorCmd string, coverageFloor, confidenceFloor float64) runtimeWiring {
+	manager := git.NewWorktreeManager(repoPath, detectDefaultBranch(repoPath))
+	worktreeRoot, err := filepath.Abs(filepath.Join(repoPath, ".limen", "worktrees"))
+	if err != nil {
+		log.Fatalf("Failed to resolve worktree root: %v", err)
+	}
+	logDir := filepath.Join(repoPath, ".limen", "logs")
+	w := runtimeWiring{gitClient: manager, worktreeRoot: worktreeRoot, logDir: logDir}
+	if mock {
+		w.router = remote.NewRouter([]string{"python", "-m", "limen.mock.router", mockTranscript}, remote.WithLogDir(logDir))
+		w.retriever = &cliRetriever{}
+		w.worker = remote.NewWorker([]string{"python", "-m", "limen.mock.worker", mockTranscript}, remote.WithLogDir(logDir))
+		w.validator = remote.NewValidator([]string{"python", "-m", "limen.mock.validator", mockTranscript}, manager, remote.WithLogDir(logDir))
+		return w
+	}
+	w.router = rtr.NewRouter(coverageFloor, confidenceFloor)
+	w.retriever = &pipelineRetriever{pipeline: retrieval.NewPipeline(
+		retrieval.WithCorpusLoader(&retrieval.GitCorpusLoader{RepoPath: repoPath}),
+	)}
+	if workerBackend == "pi" {
+		w.worker = remote.NewPiWorker(
+			remote.WithLogDir(logDir),
+			remote.WithPiProvider(workerPiProvider),
+			remote.WithPiModel(workerPiModel),
+		)
+	} else {
+		w.worker = &cliWorker{}
+	}
+	w.validator = &cliValidator{cmd: validatorCmd, logDir: logDir}
+	return w
+}
+
 // runTUICmd launches the interactive terminal UI.
 //
 // The TUI owns a bus.ChannelBus, subscribes to it, passes the bus to
@@ -249,6 +286,8 @@ func runTUICmd() {
 	workerPiProvider := tuiFlags.String("worker-pi-provider", "", "Provider for the pi worker (e.g. mistral, openai)")
 	workerPiModel := tuiFlags.String("worker-pi-model", "", "Model for the pi worker (e.g. codestral-latest)")
 	validatorCmd := tuiFlags.String("validator-cmd", "", "Command to run for cli validator")
+	coverageFloor := tuiFlags.Float64("coverage-floor", -1, "Coverage threshold for the router cascade (default: 0.60, set to 0 to force PROCEED)")
+	confidenceFloor := tuiFlags.Float64("confidence-floor", -1, "Confidence threshold for the router cascade (default: 0.50, set to 0 to force PROCEED)")
 
 	if err := tuiFlags.Parse(os.Args[2:]); err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
@@ -272,13 +311,11 @@ func runTUICmd() {
 	}
 
 	if !isTTY(os.Stdout.Fd()) {
-		// NOTE: Non-interactive stdout. Fall back to the one-shot log style so
-		// pipes and CI get the same outcome reporting without ANSI pollution.
-		runTaskOneShot(*taskID, *prompt, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend, *workerPiProvider, *workerPiModel, *validatorCmd)
+		runTaskOneShot(*taskID, *prompt, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend, *workerPiProvider, *workerPiModel, *validatorCmd, *coverageFloor, *confidenceFloor)
 		return
 	}
 
-	runTaskInteractive(*taskID, *prompt, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend, *workerPiProvider, *workerPiModel, *validatorCmd)
+	runTaskInteractive(*taskID, *prompt, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend, *workerPiProvider, *workerPiModel, *validatorCmd, *coverageFloor, *confidenceFloor)
 }
 
 // isTTY reports whether the given file descriptor is an interactive terminal.
@@ -305,7 +342,7 @@ func detectDefaultBranch(repoPath string) string {
 // Bubble Tea program in the foreground. After the program exits, a single
 // final-state line is printed so scripts that parse the trailing output still
 // get the outcome.
-func runTaskInteractive(taskID, prompt, dbPath, repoPath string, mock bool, mockTranscript string, workerBackend, workerPiProvider, workerPiModel string, validatorCmd string) {
+func runTaskInteractive(taskID, prompt, dbPath, repoPath string, mock bool, mockTranscript string, workerBackend, workerPiProvider, workerPiModel string, validatorCmd string, coverageFloor, confidenceFloor float64) {
 	store, err := state.NewSQLiteStore(dbPath)
 	if err != nil {
 		log.Fatalf("Failed to initialize SQLite store: %v", err)
@@ -314,62 +351,13 @@ func runTaskInteractive(taskID, prompt, dbPath, repoPath string, mock bool, mock
 
 	_ = registerDBPath(taskID, dbPath)
 
-	manager := git.NewWorktreeManager(repoPath, detectDefaultBranch(repoPath))
-
-	worktreeRoot, err := filepath.Abs(filepath.Join(repoPath, ".limen", "worktrees"))
-	if err != nil {
-		log.Fatalf("Failed to resolve worktree root: %v", err)
-	}
-
+	rw := newRuntimeWiring(repoPath, mock, mockTranscript, workerBackend, workerPiProvider, workerPiModel, validatorCmd, coverageFloor, confidenceFloor)
 	eventBus := bus.NewChannelBus()
 	defer eventBus.Close()
 
-	var (
-		router    orchestrator.Router
-		retriever orchestrator.Retriever
-		worker    orchestrator.Worker
-		validator orchestrator.Validator
-		gitClient orchestrator.GitClient
-	)
-
-	gitClient = manager
-
-	logDir := filepath.Join(repoPath, ".limen", "logs")
-
-	if mock {
-		// NOTE: Wire Python mock backend adapters. Each adapter launches a
-		// single-shot `python -m limen.mock.<role>` subprocess per call and
-		// passes the transcript path as argv[1] so the mock runtime replays
-		// canned entries from the transcript file.
-		router = remote.NewRouter([]string{"python", "-m", "limen.mock.router", mockTranscript}, remote.WithLogDir(logDir))
-		retriever = &cliRetriever{}
-		worker = remote.NewWorker([]string{"python", "-m", "limen.mock.worker", mockTranscript}, remote.WithLogDir(logDir))
-		validator = remote.NewValidator([]string{"python", "-m", "limen.mock.validator", mockTranscript}, gitClient, remote.WithLogDir(logDir))
-	} else {
-		router = &cliRouter{}
-		retriever = &cliRetriever{}
-		if workerBackend == "pi" {
-			worker = remote.NewPiWorker(
-				remote.WithLogDir(logDir),
-				remote.WithPiProvider(workerPiProvider),
-				remote.WithPiModel(workerPiModel),
-			)
-		} else {
-			worker = &cliWorker{}
-		}
-		validator = &cliValidator{cmd: validatorCmd, logDir: logDir}
-	}
-
 	orch := orchestrator.NewOrchestrator(
-		store,
-		store,
-		eventBus,
-		router,
-		retriever,
-		worker,
-		validator,
-		gitClient,
-		worktreeRoot,
+		store, store, eventBus,
+		rw.router, rw.retriever, rw.worker, rw.validator, rw.gitClient, rw.worktreeRoot,
 	)
 
 	if _, err := store.CreateTask(taskID, 3, prompt); err != nil {
@@ -407,7 +395,7 @@ func runTaskInteractive(taskID, prompt, dbPath, repoPath string, mock bool, mock
 	// stderr which bleeds through the alt screen and corrupts the display.
 	// Redirect to the log directory if available, otherwise discard.
 	prevLogOut := log.Writer()
-	tuiLogPath := filepath.Join(logDir, "tui.log")
+	tuiLogPath := filepath.Join(rw.logDir, "tui.log")
 	if f, ferr := os.OpenFile(tuiLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); ferr == nil {
 		log.SetOutput(f)
 		defer func() { log.SetOutput(prevLogOut); f.Close() }()
@@ -429,7 +417,7 @@ func runTaskInteractive(taskID, prompt, dbPath, repoPath string, mock bool, mock
 // creation, RunTask execution, and final state logging. Both the explicit
 // `run-task` subcommand and the non-TTY fallback from `runTUICmd` delegate here
 // to avoid duplicating the setup and teardown logic.
-func runTaskWithConfig(taskID, prompt, dbPath, repoPath string, mock bool, mockTranscript string, workerBackend, workerPiProvider, workerPiModel string, validatorCmd string) {
+func runTaskWithConfig(taskID, prompt, dbPath, repoPath string, mock bool, mockTranscript string, workerBackend, workerPiProvider, workerPiModel string, validatorCmd string, coverageFloor, confidenceFloor float64) {
 	store, err := state.NewSQLiteStore(dbPath)
 	if err != nil {
 		log.Fatalf("Failed to initialize SQLite store: %v", err)
@@ -438,64 +426,13 @@ func runTaskWithConfig(taskID, prompt, dbPath, repoPath string, mock bool, mockT
 
 	_ = registerDBPath(taskID, dbPath)
 
-	manager := git.NewWorktreeManager(repoPath, detectDefaultBranch(repoPath))
-
-	worktreeRoot, err := filepath.Abs(filepath.Join(repoPath, ".limen", "worktrees"))
-	if err != nil {
-		log.Fatalf("Failed to resolve worktree root: %v", err)
-	}
-
-	// NOTE: Log-style mode has no TUI subscriber, so a fresh ChannelBus with no
-	// subscribers discards every published event (Publish fans out to an empty
-	// subscriber slice and returns immediately, without blocking). The bus is
-	// still threaded through the orchestrator so the synthetic events from the
-	// CLI stubs are produced on the canonical transport and the interactive
-	// path can subscribe without recompiling.
+	rw := newRuntimeWiring(repoPath, mock, mockTranscript, workerBackend, workerPiProvider, workerPiModel, validatorCmd, coverageFloor, confidenceFloor)
 	eventBus := bus.NewChannelBus()
 	defer eventBus.Close()
 
-	var (
-		router    orchestrator.Router
-		retriever orchestrator.Retriever
-		worker    orchestrator.Worker
-		validator orchestrator.Validator
-		gitClient orchestrator.GitClient
-	)
-
-	gitClient = manager
-
-	logDir := filepath.Join(repoPath, ".limen", "logs")
-
-	if mock {
-		router = remote.NewRouter([]string{"python", "-m", "limen.mock.router", mockTranscript}, remote.WithLogDir(logDir))
-		retriever = &cliRetriever{}
-		worker = remote.NewWorker([]string{"python", "-m", "limen.mock.worker", mockTranscript}, remote.WithLogDir(logDir))
-		validator = remote.NewValidator([]string{"python", "-m", "limen.mock.validator", mockTranscript}, gitClient, remote.WithLogDir(logDir))
-	} else {
-		router = &cliRouter{}
-		retriever = &cliRetriever{}
-		if workerBackend == "pi" {
-			worker = remote.NewPiWorker(
-				remote.WithLogDir(logDir),
-				remote.WithPiProvider(workerPiProvider),
-				remote.WithPiModel(workerPiModel),
-			)
-		} else {
-			worker = &cliWorker{}
-		}
-		validator = &cliValidator{cmd: validatorCmd, logDir: logDir}
-	}
-
 	orch := orchestrator.NewOrchestrator(
-		store,
-		store,
-		eventBus,
-		router,
-		retriever,
-		worker,
-		validator,
-		gitClient,
-		worktreeRoot,
+		store, store, eventBus,
+		rw.router, rw.retriever, rw.worker, rw.validator, rw.gitClient, rw.worktreeRoot,
 	)
 
 	// Ensure the task exists. This is for convenience during early development.
@@ -519,8 +456,8 @@ func runTaskWithConfig(taskID, prompt, dbPath, repoPath string, mock bool, mockT
 
 // runTaskOneShot is the non-TTY fallback. It reuses the run-task log-style
 // output and shares the same setup path as the explicit `run-task` subcommand.
-func runTaskOneShot(taskID, prompt, dbPath, repoPath string, mock bool, mockTranscript string, workerBackend, workerPiProvider, workerPiModel string, validatorCmd string) {
-	runTaskWithConfig(taskID, prompt, dbPath, repoPath, mock, mockTranscript, workerBackend, workerPiProvider, workerPiModel, validatorCmd)
+func runTaskOneShot(taskID, prompt, dbPath, repoPath string, mock bool, mockTranscript string, workerBackend, workerPiProvider, workerPiModel string, validatorCmd string, coverageFloor, confidenceFloor float64) {
+	runTaskWithConfig(taskID, prompt, dbPath, repoPath, mock, mockTranscript, workerBackend, workerPiProvider, workerPiModel, validatorCmd, coverageFloor, confidenceFloor)
 }
 
 func runTaskCmd() {
@@ -535,6 +472,8 @@ func runTaskCmd() {
 	workerPiProvider := runTaskFlags.String("worker-pi-provider", "", "Provider for the pi worker (e.g. mistral, openai)")
 	workerPiModel := runTaskFlags.String("worker-pi-model", "", "Model for the pi worker (e.g. codestral-latest)")
 	validatorCmd := runTaskFlags.String("validator-cmd", "", "Command to run for cli validator")
+	coverageFloor := runTaskFlags.Float64("coverage-floor", -1, "Coverage threshold for the router cascade (default: 0.60, set to 0 to force PROCEED)")
+	confidenceFloor := runTaskFlags.Float64("confidence-floor", -1, "Confidence threshold for the router cascade (default: 0.50, set to 0 to force PROCEED)")
 
 	if err := runTaskFlags.Parse(os.Args[2:]); err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
@@ -557,7 +496,7 @@ func runTaskCmd() {
 		*dbPath = filepath.Join(*repoPath, "limen.db")
 	}
 
-	runTaskWithConfig(*taskID, *prompt, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend, *workerPiProvider, *workerPiModel, *validatorCmd)
+	runTaskWithConfig(*taskID, *prompt, *dbPath, *repoPath, *mockFlag, *mockTranscript, *workerBackend, *workerPiProvider, *workerPiModel, *validatorCmd, *coverageFloor, *confidenceFloor)
 }
 
 func runReadyForReviewCmd() {

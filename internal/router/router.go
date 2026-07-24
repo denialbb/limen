@@ -33,13 +33,14 @@ type Router struct {
 	ConfidenceFloor float64
 }
 
-// NewRouter constructs a Router. Zero values are replaced with starter defaults
-// (coverage_floor=0.60, confidence_floor=0.50) from ADR 0005.
+// NewRouter constructs a Router. Negative values are replaced with starter
+// defaults (coverage_floor=0.60, confidence_floor=0.50) from ADR 0005. Zero
+// is a valid floor value (bypasses the corresponding check in the cascade).
 func NewRouter(coverageFloor, confidenceFloor float64) *Router {
-	if coverageFloor <= 0 {
+	if coverageFloor < 0 {
 		coverageFloor = defaultCoverageFloor
 	}
-	if confidenceFloor <= 0 {
+	if confidenceFloor < 0 {
 		confidenceFloor = defaultConfidenceFloor
 	}
 	return &Router{
@@ -59,8 +60,8 @@ func NewRouter(coverageFloor, confidenceFloor float64) *Router {
 //	2. else, confidence < ConfidenceFloor           → ESCALATE
 //	3. else                                         → PROCEED
 //
-// If the snapshot is empty or malformed, the Router defaults to PROCEED for
-// backward compatibility with the cliRetriever stub.
+// If the snapshot is empty or malformed, the Router defaults to PROCEED as a
+// defensive fallback.
 func (r *Router) Evaluate(ctx context.Context, task *state.Task, em orchestrator.Emitter) (orchestrator.RouterDecision, error) {
 	var (
 		coverageHint float64
@@ -69,16 +70,18 @@ func (r *Router) Evaluate(ctx context.Context, task *state.Task, em orchestrator
 
 	manifest, err := retrieval.ParseManifest(task.ContextSnapshot)
 	if err != nil {
-		// Malformed or empty snapshot: emit with defaults and PROCEED for
-		// backward compat with stub retriever.
+		// Malformed or empty snapshot: emit with defaults and PROCEED
+		// as a defensive fallback.
 		return r.emitAndReturn(ctx, task.ID, task.ContextSnapshot, orchestrator.DecisionProceed, "empty or malformed context snapshot; proceeding", em)
 	}
 
 	coverageHint = manifest.CoverageHint
 	confidence = manifest.Confidence
 
-	// Cascade 0: zero coverage is the escape hatch — no EXPAND, straight to ESCALATE.
-	if coverageHint == 0 {
+	// Cascade 0: zero coverage is the escape hatch — no EXPAND, straight to
+	// ESCALATE. Bypassed when CoverageFloor == 0 (the caller explicitly opted
+	// to let zero-coverage tasks proceed).
+	if coverageHint == 0 && r.CoverageFloor > 0 {
 		return r.emitAndReturn(ctx, task.ID, task.ContextSnapshot, orchestrator.DecisionEscalate,
 			"zero coverage: no query terms matched any chunk (escape hatch)", em)
 	}
@@ -123,15 +126,19 @@ func (r *Router) emitAndReturn(ctx context.Context, taskID, excerpt string, deci
 		Timestamp:   now,
 	})
 
-	_ = ctx // context reserved for future use (e.g. cancellation-aware emits)
 	return decision, nil
 }
 
 // truncateExcerpt caps the ContextExcerpt at 512 runes to avoid flooding the TUI
 // with raw snapshot text while still giving the user a preview.
 func truncateExcerpt(s string) string {
-	if len(s) <= 512 {
+	const max = 512
+	if len(s) <= max {
 		return s
 	}
-	return s[:512] + fmt.Sprintf("... (truncated %d bytes)", len(s)-512)
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + fmt.Sprintf("... (truncated %d runes)", len(r)-max)
 }

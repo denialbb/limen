@@ -177,15 +177,44 @@ func TestRouter_Evaluate_EmptySnapshot(t *testing.T) {
 	}
 }
 
-// TestNewRouter_Defaults verifies that zero values are replaced with the
-// starter defaults from ADR 0005.
+// TestNewRouter_Defaults verifies that negative values are replaced with the
+// starter defaults from ADR 0005. Zero is a valid floor value (bypasses check).
 func TestNewRouter_Defaults(t *testing.T) {
-	r := router.NewRouter(0, 0)
+	r := router.NewRouter(-1, -1)
 	if r.CoverageFloor != 0.60 {
 		t.Fatalf("expected CoverageFloor=0.60, got %v", r.CoverageFloor)
 	}
 	if r.ConfidenceFloor != 0.50 {
 		t.Fatalf("expected ConfidenceFloor=0.50, got %v", r.ConfidenceFloor)
+	}
+}
+
+// TestNewRouter_ZeroFloors verifies that explicit zero values are preserved
+// (ADR 0008: zero floors bypass the router cascade for testing).
+func TestNewRouter_ZeroFloors(t *testing.T) {
+	r := router.NewRouter(0, 0)
+	if r.CoverageFloor != 0 {
+		t.Fatalf("expected CoverageFloor=0, got %v", r.CoverageFloor)
+	}
+	if r.ConfidenceFloor != 0 {
+		t.Fatalf("expected ConfidenceFloor=0, got %v", r.ConfidenceFloor)
+	}
+}
+
+// TestRouter_Evaluate_ProceedOnZeroCoverageWithZeroFloor verifies the escape
+// hatch is bypassed when CoverageFloor == 0 (ADR 0008): zero coverage with a
+// zero floor PROCEEDs instead of ESCALATE.
+func TestRouter_Evaluate_ProceedOnZeroCoverageWithZeroFloor(t *testing.T) {
+	r := &router.Router{CoverageFloor: 0, ConfidenceFloor: 0}
+	rec := bus.NewRecorderEmitter()
+	task := &state.Task{ID: "task-test", ContextSnapshot: testManifest(0, 0)}
+
+	decision, err := r.Evaluate(context.Background(), task, rec)
+	if err != nil {
+		t.Fatalf("Evaluate error: %v", err)
+	}
+	if decision != orchestrator.DecisionProceed {
+		t.Fatalf("expected PROCEED (zero floor bypasses escape hatch), got %s", decision)
 	}
 }
 
