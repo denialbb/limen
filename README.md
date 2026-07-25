@@ -56,13 +56,13 @@ The orchestration engine is written in Go. It is the exclusive owner of the syst
 
 ### 2. Thin Clients (Execution Layer)
 
-The Python layer has no stateful responsibilities. It consists solely of **stateless Model Context Protocol (MCP)** adapters and the heuristic routing engine.
+The Python layer has no stateful responsibilities. It hosts the **stateless mock adapters** (for spike transcripts and deterministic CI runs) and the routing fallback. The real cognitive path is CLI-agnostic: the Go Core spawns coding-agent CLIs as dialect-driven subprocesses (see `docs/adr/0009`).
 
-- **Router (L1)**: Evaluates context entropy and complexity to decide whether to proceed, expand context, or escalate to a human.
-- **Workers (L2)**: Connect to LLMs to generate code inside isolated worktrees.
-- **Validators (L3)**: Evaluate the worker's artifacts against the original request.
+- **Router (L1)**: Go-native cascade over retrieval manifest confidence/coverage; decides PROCEED / EXPAND / ESCALATE per `docs/adr/0005`. Python mock adapter still available for spike transcripts.
+- **Workers (L2)**: Any headless coding-agent CLI — `pi`, `claude`, `opencode`, `agy` (per-role `--worker-backend`) — generates code inside isolated worktrees. Dialects in `internal/remote/`: stream-json RPC (pi/claude/opencode) or one-shot plain text (agy).
+- **Validators (L3)**: `shell` command gate (default) or an agent CLI as L3 (`--validator-backend shell|agy|claude|opencode`); evaluates the worker's artifacts against the original request.
 
-When an LLM invokes an MCP tool, the Python adapter simply formats the request and spawns the Go Core as a CLI subprocess to manipulate the canonical state.
+Tool calls from the worker/validator CLI flow back to the Go Core via `limen` binary callbacks (`ready-for-review` / `submit-verdict`), which manipulate the canonical state and git; the Go Core owns state and git exclusively. See `docs/adr/0009` for the CLI-dialect + callback rationale (no MCP server).
 
 ---
 
@@ -92,13 +92,17 @@ Limen has completed its core orchestration layer. The Go Core state machine, SQL
 - [x] Implemented the Go Git Worktree virtualization engine
 - [x] Built the core `limen` subprocess CLI
 - [x] Real Worker/Validator loop (Pi-default, MCP-fallback) reaching `COMMITTED`
-- [ ] Implement the Go-native progressive-retrieval pipeline (BM25 + structural stage) and the real Router (see `docs/adr/`)
+- [x] Go-native progressive-retrieval pipeline (BM25 + structural stage, BM25-gated EXPAND widening)
+- [x] Real Router cascade (PROCEED/EXPAND/ESCALATE per `docs/adr/0005`)
+- [x] CLI-agnostic worker/validator dialects (pi, claude, opencode, agy) — `docs/adr/0009`
+- [x] Interactive Bubble Tea TUI (Router/Worker/Validator/Timeline; split + tab layouts; `?` help)
+- [x] Autonomous agent-driven TUI test harness (`scripts/tui-*.sh`, `tui-wait.sh`, headless CI gate)
 
 ---
 
 ## Testing Locally
 
-The Go orchestration engine is functional and can be tested using the built CLI. While the actual LLM `Worker` and `Validator` clients are currently stubbed in the CLI facade, running a task will trace a complete "happy path" through the strict orchestration pipeline.
+The Go orchestration engine is functional and can be tested using the built CLI. The retrieval pipeline and router cascade run by default in non-mock mode; worker/validator backends are pluggable via flags.
 
 **1. Build the CLI binary:**
 
@@ -129,3 +133,29 @@ SELECT * FROM state_transitions WHERE task_id = 'test-alpha-1' ORDER BY recorded
 -- Inspect the tool invocations
 SELECT * FROM tool_calls WHERE task_id = 'test-alpha-1';
 ```
+
+### Interactive TUI
+
+The bare invocation launches the observe-only Bubble Tea TUI (Router/Worker/Validator/Timeline), running the orchestrator in-process with the L1/L2/L3 components spawned as subprocesses. Non-TTY stdout falls back to the one-shot log-style output above.
+
+```bash
+./bin/limen --task-id "test-alpha-1" --prompt "Fix the add function" \
+  --repo-path ./tmp/test-repo --mock=true --coverage-floor=0 --confidence-floor=0
+```
+
+Keys: `1`-`4` / `[` `]` switch tabs (tab layout, <120×30); `w`/`Enter`/`Esc` navigate workers (split layout, ≥120×30); `j`/`k` scroll; `?` help; `q` quit.
+
+### Autonomous test harness
+
+`scripts/tui-*.sh` drive the TUI in a tmux session so an agent can test it with no human in the loop — start, wait for a terminal state, capture, navigate, and quit cleanly:
+
+```bash
+./scripts/reset-test-repo.sh tmp/test-repo
+./scripts/tui-start.sh limen-tui --task-id tui-1 --prompt "Fix the add function" \
+  --repo-path tmp/test-repo --mock=true --coverage-floor=0 --confidence-floor=0
+./scripts/tui-wait.sh limen-tui --timeout 600   # exit 0 on COMMITTED|FAILED_ESCALATED|FINALIZED, 124 on timeout
+./scripts/tui-capture.sh limen-tui               # assert on rendered text
+./scripts/tui-send.sh limen-tui "q" && ./scripts/tui-stop.sh limen-tui
+```
+
+`scripts/test-tui-e2e.sh` runs the deterministic mock lifecycle headlessly (no tmux, no tokens) and is wired as the `.github/workflows/tui-e2e.yml` CI gate. See `.agents/skills/limen-tui/SKILL.md` and `docs/spikes/016-autonomous-tui-testing.md`.
