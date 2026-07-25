@@ -17,8 +17,13 @@ All scripts live in `scripts/` at the repo root. Run from repo root.
 | `scripts/tui-capture.sh [session] [--png /path.png]` | Capture current screen as text (+ optional PNG) |
 | `scripts/tui-wait.sh <session> [--pattern <regex>] [--timeout <seconds>]` | Block until the screen matches a pattern (default terminal states); exit 0 on match, 124 on timeout |
 | `scripts/tui-stop.sh [session]` | Kill the session |
+| `scripts/test-tui-e2e.sh` | Headless, zero-token e2e gate: drives the mock lifecycle to `COMMITTED` in pipe mode (no tmux) and tmux mode; exits non-zero on any failed assertion. Run by `.github/workflows/tui-e2e.yml` on push/PR to `main`. |
 
 Default session name: `limen-tui`.
+
+`scripts/reset-test-repo.sh <path> [lang]` scaffolds the fixture repo:
+`lang=go` (default) → `main.go`/`main_test.go`, validate with `go test ./...`;
+`lang=python` → `calc.py`/`test_calc.py`, validate with `python -m pytest -x`.
 
 `tui-start.sh` exports `PYTHONPATH=<root>/src` into the pane before launching
 `./limen`, so **mock mode works out of the box**. Without it the mock backend
@@ -45,6 +50,7 @@ asserting on rendered content.
 | Move cursor / scroll | `j` / `k` (or ↓/↑) | `j` / `k` (or ↓/↑) |
 | Open worker detail | `enter` (when workers focused) | — (worker tab shows detail inline) |
 | Back to timeline focus | `esc` | — |
+| Help overlay (toggle) | `?` (Esc/`?` to close) | `?` (Esc/`?` to close) |
 | Quit (graceful) | `q` (or `ctrl+c`) | `q` (or `ctrl+c`) |
 
 Split-mode drill-down: `w` → `j`/`k` to pick a worker → `enter` for its detail
