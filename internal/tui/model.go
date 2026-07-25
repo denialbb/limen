@@ -99,6 +99,10 @@ type Model struct {
 	workerDetail    WorkerDetail
 	currentWorkerID string
 
+	// showHelp toggles the keybinding help overlay (bound to `?`). It renders
+	// over the content region in both layouts and is dismissed with `?` or Esc.
+	showHelp bool
+
 	quitting bool
 }
 
@@ -197,6 +201,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // In tab mode, number keys jump to a tab, brackets cycle, j/k scroll, and q /
 // Ctrl+C quit.
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// `?` toggles the keybinding help overlay in both layouts.
+	if msg.String() == "?" {
+		m.showHelp = !m.showHelp
+		return m, nil
+	}
+	// While the overlay is open it captures input: Esc / `?` close it, quit keys
+	// still quit, everything else is swallowed so it can't drive the hidden UI.
+	if m.showHelp {
+		switch msg.String() {
+		case "esc":
+			m.showHelp = false
+		case "q", "ctrl+c":
+			m.quitting = true
+			return m, tea.Quit
+		}
+		return m, nil
+	}
+
 	// Split-mode specific navigation.
 	if m.layout == layoutSplit {
 		switch msg.String() {
@@ -555,12 +577,17 @@ func (m Model) View() string {
 	}
 	sepLine := theme.SeparatorStyle().Render(strings.Repeat(theme.SeparatorRune, sepWidth))
 
-	hint := theme.HintStyle(m.width).Render("[1-4] tab  [j/k] scroll  [q] quit")
+	hint := theme.HintStyle(m.width).Render("[1-4] tab  [j/k] scroll  [?] help  [q] quit")
+
+	content := m.activeTabView()
+	if m.showHelp {
+		content = m.helpOverlay(m.width, lipgloss.Height(content))
+	}
 
 	blocks := []string{
 		m.header.View(),
 		sepLine,
-		m.activeTabView(),
+		content,
 		m.tabStrip.View(),
 		hint,
 	}
@@ -626,8 +653,11 @@ func (m Model) splitView() string {
 	)
 
 	mainArea := splitColumns(leftContent, rightContent, contentH)
+	if m.showHelp {
+		mainArea = m.helpOverlay(m.width, contentH)
+	}
 
-	hint := theme.HintStyle(m.width).Render("[j/k] scroll  [w] workers  [Enter] select  [Esc] back  [q] quit")
+	hint := theme.HintStyle(m.width).Render("[j/k] scroll  [w] workers  [Enter] select  [Esc] back  [?] help  [q] quit")
 
 	blocks := []string{
 		m.header.View(),
@@ -667,6 +697,52 @@ func (m Model) activeTabView() string {
 	default:
 		return ""
 	}
+}
+
+// helpOverlay renders the keybinding help box centered over a blank canvas of
+// the given width and height. The listed keys are layout-specific so the
+// overlay always documents the bindings that are actually live. It is composed
+// over the content region by View / splitView when showHelp is set.
+func (m Model) helpOverlay(width, height int) string {
+	var rows []string
+	if m.layout == layoutSplit {
+		rows = []string{
+			"[w]      focus workers",
+			"[Enter]  open worker detail",
+			"[Esc]    back to timeline",
+			"[j/k]    scroll",
+			"[?]      toggle help",
+			"[q]      quit",
+		}
+	} else {
+		rows = []string{
+			"[1-4]    switch tab",
+			"[ [/] ]  cycle tabs",
+			"[j/k]    scroll",
+			"[?]      toggle help",
+			"[q]      quit",
+		}
+	}
+
+	title := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color(theme.HeaderStateColor)).
+		Render("Keybindings")
+
+	body := lipgloss.JoinVertical(lipgloss.Left, append([]string{title, ""}, rows...)...)
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(theme.SeparatorColor)).
+		Padding(0, 2).
+		Render(body)
+
+	if width < lipgloss.Width(box) {
+		width = lipgloss.Width(box)
+	}
+	if height < lipgloss.Height(box) {
+		height = lipgloss.Height(box)
+	}
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, box)
 }
 
 func (m Model) Finalized() bool             { return m.finalized }

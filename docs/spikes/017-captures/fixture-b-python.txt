@@ -1,0 +1,47 @@
+Scenario: fixture B — real Python repo, real prompt, pytest validator
+Worker CLI: pi (dialect held fixed — already proven in issue 016 — so the new
+variable is the language/validator, not the dialect).
+Run: task-id=tui-pi-py-1  worker=pi  validator=shell "python -m pytest -x"
+     fixture=tmp/test-repo-py (calc.py buggy add + test_calc.py pytest)
+     prompt="Fix the add function in calc.py so the pytest test passes"
+     coverage-floor=0 confidence-floor=0
+Outcome: COMMITTED, retries:0  (2026-07-25 ~18:10)
+Notes: pytest 9.1.1 runs in the git worktree; the shell validator's PASS verdict
+       embeds the full pytest session output ("1 passed"). pi patched calc.py
+       with sed then called `limen ready-for-review`. Env caveat: pytest was
+       installed to the user site (`pip install --user --break-system-packages
+       pytest`) because Arch's system Python is PEP-668 externally-managed and
+       had no pytest; `python -m pytest` then resolves.
+
+=== split layout — timeline focus (full screen) ===
+ limen  task tui-pi-py-1                                                                                                                                                                 COMMITTED  retries:0  expands:0  ✓
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ─ Router ────────────────────────────────────────────────────────│[18:10:43] context built: 345 bytes
+[18:10:43] Context built: 345 bytes                               │├─ CREATED → CONTEXT_BUILDING
+[18:10:43] Router examining: entropy=0.000                        │└─ CONTEXT_BUILDING → ROUTING_EVALUATION
+[18:10:43] Router decision: PROCEED — sufficient confidence and   │[18:10:43] router: PROCEED — sufficient confidence and coverage
+           coverage                                               │└─ ROUTING_EVALUATION → WORKER_RUNNING
+                                                                  │[18:10:43] worker started (retry=0)
+                                                                  │└─ WORKER_RUNNING → AWAITING_VALIDATION
+                                                                  │[18:10:53] verdict: PASS — Command "python -m pytest -x" passed:
+                                                                  │           ============================= test session starts ==============================
+                                                                  │           platform linux -- Python 3.14.6, pytest-9.1.1, pluggy-1.6.0
+                                                                  │           collected 1 item
+                                                                  │           test_calc.py .                                                           [100%]
+                                                                  │           ============================== 1 passed in 0.01s ===============================
+                                                                  │└─ AWAITING_VALIDATION → APPROVED
+                                                                  │[18:10:55] worker finished
+                                                                  │└─ APPROVED → COMMITTED
+                                                                  │[18:10:55] FINALIZED: state=COMMITTED output="diff --git c/calc.py w/calc.py index 9fe..."
+ FINAL: COMMITTED
+ w/calc.py
+ ─ Workers ─────────────────────────────────────────────
+  ✓  worker-0  tui-pi-py-1
+
+=== split layout — worker detail (w -> Enter) ===
+[18:10:53] tool call: bash {"command":"sed -i 's/return a - b/return a + b/' calc.py"}
+[18:10:53] tool call: bash {"command":"limen ready-for-review --task-id tui-pi-py-1 --summary \"Fixed the add function in calc.py to correctly add two numbers instead of subtracting them\""}
+[18:10:53] criterion "placeholder_criterion": PASS
+[18:10:53] verdict: PASS — Command "python -m pytest -x" passed:
+           ... 1 passed in 0.01s ...
+[18:10:55] agent: The task has been completed successfully. The add function in calc.py has been fixed, and the pytest test now passes.

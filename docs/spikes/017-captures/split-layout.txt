@@ -1,0 +1,39 @@
+Scenario: split layout golden path (mock, zero-token)
+Terminal 220x50 (>= 120/30 thresholds) -> split layout: left column Router +
+Validator, right column Timeline/WorkerDetail over the Workers panel. Mock
+spike.json reject->revise run (task-id=split-1) to COMMITTED, retries:1.
+Nav keys: [w] focus workers, [j/k] move cursor, [Enter] open detail, [Esc]
+back, [?] help, [q] quit.
+
+=== header + left column + workers panel ===
+ limen  task split-1                                                                                                                                                                     COMMITTED  retries:1  expands:0  ✓
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ─ Router ────────────────────────────────────────────────────────
+[18:08:39] Context built: 0 bytes
+[18:08:39] Router decision: PROCEED — Task is well-bounded; no expansion needed.
+ ─ Validator ─────────────────────────────────────────────────────
+[18:08:39] Validator examining: 2 criterion(s)
+[18:08:39] Criterion "compiles": PASS — OK
+[18:08:39] Criterion "correctness": FAIL — Off-by-one at line 3.
+[18:08:39] Verdict: FAIL — Solution contains an off-by-one bug in the loop bound. Please fix and resubmit.
+[18:08:39] Validator examining: 2 criterion(s)
+[18:08:39] Criterion "compiles": PASS — OK
+[18:08:39] Criterion "correctness": PASS — All checks pass.
+[18:08:39] Verdict: PASS — Solution is correct.
+ ─ Workers ─────────────────────────────────────────────
+  ✗  worker-0  split-1
+  ✓  worker-1  split-1
+
+=== worker-0 detail (✗ — the rejected attempt; w -> k -> Enter) ===
+[18:08:39] tool call: file.write {"path": "solution.txt", "content": "initial buggy solution"}
+[18:08:39] file edit: solution.txt (write)
+[18:08:39] criterion "compiles": PASS
+[18:08:39] criterion "correctness": FAIL
+[18:08:39] verdict: FAIL — Solution contains an off-by-one bug in the loop bound. Please fix and resubmit.
+
+=== worker-1 detail (✓ — the accepted revision; w -> Enter) ===
+[18:08:39] tool call: file.write {"path": "solution.txt", "content": "fixed solution"}
+[18:08:39] file edit: solution.txt (write)
+[18:08:39] criterion "compiles": PASS
+[18:08:39] criterion "correctness": PASS
+[18:08:39] verdict: PASS — Solution is correct.

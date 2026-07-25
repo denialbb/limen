@@ -398,6 +398,93 @@ func TestQuitOnCtrlC(t *testing.T) {
 	}
 }
 
+// newSplitModel constructs a Model sized into the split layout (width >= 120,
+// height >= 30) so help-overlay and split-specific rendering can be asserted.
+func newSplitModel(t *testing.T, taskID string, eventBus bus.EventBus) Model {
+	t.Helper()
+	m := NewModel(taskID, eventBus)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 130, Height: 40})
+	return updated.(Model)
+}
+
+// TestHelpOverlayTabLayout verifies that `?` toggles a keybinding help overlay
+// in tab layout and that the overlay lists the tab-mode keys.
+func TestHelpOverlayTabLayout(t *testing.T) {
+	b := bus.NewChannelBus()
+	defer b.Close()
+	m := newSizedModel(t, "task-help-tab", b)
+
+	if strings.Contains(stripANSI(m.View()), "Keybindings") {
+		t.Fatalf("help overlay visible before `?` was pressed")
+	}
+
+	m = key(t, m, "?")
+	out := stripANSI(m.View())
+	if !strings.Contains(out, "Keybindings") {
+		t.Fatalf("`?` did not open the help overlay\n--- got ---\n%s", out)
+	}
+	// Tab-mode keys must be documented.
+	for _, want := range []string{"switch tab", "cycle tabs", "scroll", "quit"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("help overlay missing %q in tab layout\n--- got ---\n%s", want, out)
+		}
+	}
+
+	// `?` again closes it.
+	m = key(t, m, "?")
+	if strings.Contains(stripANSI(m.View()), "Keybindings") {
+		t.Fatalf("second `?` did not close the help overlay")
+	}
+}
+
+// TestHelpOverlaySplitLayout verifies `?` toggles the overlay in split layout,
+// that it lists the split-mode keys, and that Esc dismisses it.
+func TestHelpOverlaySplitLayout(t *testing.T) {
+	b := bus.NewChannelBus()
+	defer b.Close()
+	m := newSplitModel(t, "task-help-split", b)
+
+	if m.layout != layoutSplit {
+		t.Fatalf("newSplitModel did not enter split layout: got %v", m.layout)
+	}
+
+	m = key(t, m, "?")
+	out := stripANSI(m.View())
+	if !strings.Contains(out, "Keybindings") {
+		t.Fatalf("`?` did not open the help overlay in split layout\n--- got ---\n%s", out)
+	}
+	for _, want := range []string{"workers", "worker detail", "scroll", "quit"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("help overlay missing %q in split layout\n--- got ---\n%s", want, out)
+		}
+	}
+
+	// Esc dismisses the overlay.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	if strings.Contains(stripANSI(m.View()), "Keybindings") {
+		t.Fatalf("Esc did not close the help overlay")
+	}
+}
+
+// TestHelpOverlayDoesNotQuit verifies opening help does not set the quitting
+// flag and that `q` still quits while help is open.
+func TestHelpOverlayDoesNotQuit(t *testing.T) {
+	b := bus.NewChannelBus()
+	defer b.Close()
+	m := newSizedModel(t, "task-help-quit", b)
+
+	m = key(t, m, "?")
+	if m.quitting {
+		t.Fatalf("opening help set the quitting flag")
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	m = updated.(Model)
+	if !m.quitting || cmd == nil {
+		t.Fatalf("q while help open did not quit (quitting=%v, cmd=%v)", m.quitting, cmd)
+	}
+}
+
 // TestOrchestratorErrorRoutesToTimeline verifies that non-fatal orchestrator
 // errors are surfaced in the Timeline tab rather than silently dropped.
 func TestOrchestratorErrorRoutesToTimeline(t *testing.T) {

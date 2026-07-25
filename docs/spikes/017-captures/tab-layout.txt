@@ -1,0 +1,70 @@
+Scenario: tab layout goldens (mock, zero-token)
+Terminal 100x28 (below the 120/30 split thresholds), so the TUI renders the
+single-tab layout: header + active tab body + tab strip + hint. Mock spike.json
+happy-retry run (task-id=tab-1) driven to COMMITTED, then each tab captured with
+number keys 1-4. Help overlay via `?`. Nav keys: [1-4] select, []/[[ cycle,
+[j/k] scroll, [?] help, [q] quit.
+
+=== Timeline tab (auto-selected on finalize) ===
+ limen  task tab-1                                               COMMITTED  retries:1  expands:0  ✓
+────────────────────────────────────────────────────────────────────────────────────────────────────
+[18:06:46] context built: 0 bytes
+├─ CREATED → CONTEXT_BUILDING
+└─ CONTEXT_BUILDING → ROUTING_EVALUATION
+[18:06:46] router: PROCEED — Task is well-bounded; no expansion needed.
+└─ ROUTING_EVALUATION → WORKER_RUNNING
+[18:06:46] worker started (retry=0)
+[18:06:46] worker finished
+└─ WORKER_RUNNING → AWAITING_VALIDATION
+[18:06:46] verdict: FAIL — Solution contains an off-by-one bug in the loop bound. Please fix and
+           resubmit.
+├─ AWAITING_VALIDATION → REVISION_REQUESTED
+└─ REVISION_REQUESTED → WORKER_RUNNING
+[18:06:46] worker started (retry=1)
+[18:06:46] worker finished
+└─ WORKER_RUNNING → AWAITING_VALIDATION
+[18:06:46] verdict: PASS — Solution is correct.
+├─ AWAITING_VALIDATION → APPROVED
+└─ APPROVED → COMMITTED
+[18:06:47] FINALIZED: state=COMMITTED output="diff --git c/solution.txt w/solution.txt..."
+ FINAL: COMMITTED
+ w/solution.txt
+   Router                      Worker                      Validator                     Timeline
+                                                         [1-4] tab  [j/k] scroll  [?] help  [q] quit
+
+=== Router tab ([1]) ===
+[18:06:46] Context built: 0 bytes
+[18:06:46] Router decision: PROCEED — Task is well-bounded; no expansion needed.
+   Router                      Worker                      Validator                     Timeline
+
+=== Worker tab ([2]) ===
+[18:06:46] Worker started: .../tmp/test-repo/.limen/worktrees/task-tab-1 (base: HEAD, retry: 0)
+[18:06:46] file.write: solution.txt
+[18:06:46] File edit: solution.txt (write)
+[18:06:46] Worker started: .../tmp/test-repo/.limen/worktrees/task-tab-1 (base: HEAD, retry: 1)
+[18:06:46] file.write: solution.txt
+[18:06:46] File edit: solution.txt (write)
+   Router                      Worker                      Validator                     Timeline
+
+=== Validator tab ([3]) ===
+[18:06:46] Validator examining: 2 criterion(s)
+[18:06:46] Criterion "compiles": PASS — OK
+[18:06:46] Criterion "correctness": FAIL — Off-by-one at line 3.
+[18:06:46] Verdict: FAIL — Solution contains an off-by-one bug in the loop bound. Please fix and
+           resubmit.
+[18:06:46] Validator examining: 2 criterion(s)
+[18:06:46] Criterion "compiles": PASS — OK
+[18:06:46] Criterion "correctness": PASS — All checks pass.
+[18:06:46] Verdict: PASS — Solution is correct.
+   Router                      Worker                      Validator                     Timeline
+
+=== help overlay ([?]) ===
+                                     ╭────────────────────────╮
+                                     │  Keybindings           │
+                                     │                        │
+                                     │  [1-4]    switch tab   │
+                                     │  [ [/] ]  cycle tabs   │
+                                     │  [j/k]    scroll       │
+                                     │  [?]      toggle help  │
+                                     │  [q]      quit         │
+                                     ╰────────────────────────╯

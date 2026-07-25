@@ -1,0 +1,85 @@
+{
+  "transcript_id": "always-fail-escalation",
+  "_comment": "Deterministic FAILED_ESCALATED run: router PROCEEDs, the worker writes a solution every attempt, and the validator rejects every attempt. The orchestrator escalates once RetryCount >= MaxRetries (default 3), i.e. after 4 rejected attempts. Five worker/validator entries are provided (indexed by 1-based attempt) so the transcript is never exhausted before escalation.",
+  "router": [
+    {
+      "decision": "proceed",
+      "rationale": "Task is well-bounded; no expansion needed.",
+      "complexity": "normal"
+    }
+  ],
+  "worker": [
+    {
+      "tool_calls": [
+        { "name": "file.write", "args": { "path": "solution.txt", "content": "attempt 1 — still buggy" } }
+      ],
+      "result": { "status": "complete", "summary": "Wrote solution.txt (attempt 1)." }
+    },
+    {
+      "tool_calls": [
+        { "name": "file.write", "args": { "path": "solution.txt", "content": "attempt 2 — still buggy" } }
+      ],
+      "result": { "status": "complete", "summary": "Wrote solution.txt (attempt 2)." }
+    },
+    {
+      "tool_calls": [
+        { "name": "file.write", "args": { "path": "solution.txt", "content": "attempt 3 — still buggy" } }
+      ],
+      "result": { "status": "complete", "summary": "Wrote solution.txt (attempt 3)." }
+    },
+    {
+      "tool_calls": [
+        { "name": "file.write", "args": { "path": "solution.txt", "content": "attempt 4 — still buggy" } }
+      ],
+      "result": { "status": "complete", "summary": "Wrote solution.txt (attempt 4)." }
+    },
+    {
+      "tool_calls": [
+        { "name": "file.write", "args": { "path": "solution.txt", "content": "attempt 5 — still buggy" } }
+      ],
+      "result": { "status": "complete", "summary": "Wrote solution.txt (attempt 5)." }
+    }
+  ],
+  "validator": [
+    {
+      "passes": false,
+      "feedback": "Off-by-one bug persists in the loop bound.",
+      "criteria": [
+        { "name": "compiles", "passes": true, "detail": "OK" },
+        { "name": "correctness", "passes": false, "detail": "Off-by-one at line 3." }
+      ]
+    },
+    {
+      "passes": false,
+      "feedback": "Off-by-one bug persists in the loop bound.",
+      "criteria": [
+        { "name": "compiles", "passes": true, "detail": "OK" },
+        { "name": "correctness", "passes": false, "detail": "Off-by-one at line 3." }
+      ]
+    },
+    {
+      "passes": false,
+      "feedback": "Off-by-one bug persists in the loop bound.",
+      "criteria": [
+        { "name": "compiles", "passes": true, "detail": "OK" },
+        { "name": "correctness", "passes": false, "detail": "Off-by-one at line 3." }
+      ]
+    },
+    {
+      "passes": false,
+      "feedback": "Off-by-one bug persists in the loop bound.",
+      "criteria": [
+        { "name": "compiles", "passes": true, "detail": "OK" },
+        { "name": "correctness", "passes": false, "detail": "Off-by-one at line 3." }
+      ]
+    },
+    {
+      "passes": false,
+      "feedback": "Off-by-one bug persists in the loop bound.",
+      "criteria": [
+        { "name": "compiles", "passes": true, "detail": "OK" },
+        { "name": "correctness", "passes": false, "detail": "Off-by-one at line 3." }
+      ]
+    }
+  ]
+}

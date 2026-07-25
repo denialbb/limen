@@ -1,0 +1,50 @@
+Scenario: FAILED_ESCALATED (mock, zero-token)
+Transcript: src/limen/mock/transcripts/always-fail.json (validator rejects every
+            attempt). Run: task-id=esc-1  mock=true  floors=0  layout=split (220x50)
+Outcome: FAILED_ESCALATED, retries:3. Header shows retries climbing 0->3; the
+         timeline records the full reject chain (worker retry=0..3, each verdict
+         FAIL, REVISION_REQUESTED loop) ending AWAITING_VALIDATION -> FAILED_ESCALATED.
+         Workers panel shows worker-0..3 all ✗. No commit lands on the fixture
+         (worktree discarded): tmp/test-repo HEAD unchanged across the run.
+
+=== split layout — timeline focus (full screen) ===
+ limen  task esc-1                                                                                                                                                             FAILED_ESCALATED  retries:3  expands:0  done
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ─ Router ────────────────────────────────────────────────────────│[18:05:18] context built: 0 bytes
+[18:05:18] Context built: 0 bytes                                 │├─ CREATED → CONTEXT_BUILDING
+[18:05:18] Router decision: PROCEED — Task is well-bounded; no    │└─ CONTEXT_BUILDING → ROUTING_EVALUATION
+           expansion needed.                                      │[18:05:18] router: PROCEED — Task is well-bounded; no expansion needed.
+                                                                  │└─ ROUTING_EVALUATION → WORKER_RUNNING
+                                                                  │[18:05:19] worker started (retry=0)
+                                                                  │[18:05:19] worker finished
+                                                                  │└─ WORKER_RUNNING → AWAITING_VALIDATION
+                                                                  │[18:05:19] verdict: FAIL — Off-by-one bug persists in the loop bound.
+                                                                  │├─ AWAITING_VALIDATION → REVISION_REQUESTED
+                                                                  │└─ REVISION_REQUESTED → WORKER_RUNNING
+                                                                  │[18:05:19] worker started (retry=1)
+                                                                  │  ... (retry=2, retry=3 identical FAIL loops) ...
+                                                                  │[18:05:19] worker started (retry=3)
+                                                                  │[18:05:19] worker finished
+                                                                  │└─ WORKER_RUNNING → AWAITING_VALIDATION
+                                                                  │[18:05:19] verdict: FAIL — Off-by-one bug persists in the loop bound.
+                                                                  │└─ AWAITING_VALIDATION → FAILED_ESCALATED
+                                                                  │[18:05:19] FINALIZED: state=FAILED_ESCALATED output=""
+                                                                  │[18:05:19] orchestrator error: validation failed
+ FINAL: FAILED_ESCALATED
+ ─ Workers ─────────────────────────────────────────────
+  ✗  worker-0  esc-1
+  ✗  worker-1  esc-1
+  ✗  worker-2  esc-1
+  ✗  worker-3  esc-1
+
+=== split layout — help overlay (?) ===
+                                             ╭───────────────────────────────╮
+                                             │  Keybindings                  │
+                                             │                               │
+                                             │  [w]      focus workers       │
+                                             │  [Enter]  open worker detail  │
+                                             │  [Esc]    back to timeline    │
+                                             │  [j/k]    scroll              │
+                                             │  [?]      toggle help         │
+                                             │  [q]      quit                │
+                                             ╰───────────────────────────────╯
