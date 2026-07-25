@@ -1,0 +1,28 @@
+name: tui-e2e
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  tui-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      # The Go side invokes the mock backend as `python -m limen.mock.*`
+      # (hardcoded `python`, not `python3`). setup-python puts a `python` on
+      # PATH so the mock subprocesses can start on the ubuntu runner.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Build limen
+        run: go build -o limen ./cmd/limen
+      - name: Headless TUI E2E gate (mock lifecycle -> COMMITTED)
+        # tmux is preinstalled on ubuntu-latest, so both pipe and tmux modes
+        # run. The script self-skips tmux mode if tmux is ever unavailable.
+        run: ./scripts/test-tui-e2e.sh
