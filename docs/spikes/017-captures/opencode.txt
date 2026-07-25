@@ -1,0 +1,39 @@
+Dialect: opencode (RPC-family, stream-json)   Worker CLI: opencode 1.18.4
+Run: task-id=tui-opencode-1  worker=opencode  validator=shell "go test ./..."
+     fixture=buggy-add (Go)  coverage-floor=0 confidence-floor=0
+Outcome: COMMITTED, retries:0  (2026-07-25 ~17:53, worker turn ~2m10s)
+Rendering: full WorkerToolCall + WorkerAgentMessage stream. Tool names are
+           lowercase (read/edit/bash) and args use opencode's own keys
+           (filePath/newString/oldString/workdir) — contrast claude's
+           Read/Edit/Bash + file_path/new_string.
+
+=== split layout — timeline focus (full screen) ===
+ limen  task tui-opencode-1                                                                                                                                                              COMMITTED  retries:0  expands:0  ✓
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ─ Router ────────────────────────────────────────────────────────│[17:51:38] context built: 678 bytes
+[17:51:38] Context built: 678 bytes                               │├─ CREATED → CONTEXT_BUILDING
+[17:51:38] Router examining: entropy=0.000                        │└─ CONTEXT_BUILDING → ROUTING_EVALUATION
+[17:51:38] Router decision: PROCEED — sufficient confidence and   │[17:51:38] router: PROCEED — sufficient confidence and coverage
+           coverage                                               │└─ ROUTING_EVALUATION → WORKER_RUNNING
+                                                                  │[17:51:38] worker started (retry=0)
+                                                                  │└─ WORKER_RUNNING → AWAITING_VALIDATION
+                                                                  │[17:53:48] verdict: PASS — Command "go test ./..." passed:
+                                                                  │           ok      example.com/test-repo    0.002s
+                                                                  │└─ AWAITING_VALIDATION → APPROVED
+                                                                  │[17:53:51] worker finished
+                                                                  │└─ APPROVED → COMMITTED
+                                                                  │[17:53:51] FINALIZED: state=COMMITTED output="diff --git c/main.go w/main.go index 4df..."
+ FINAL: COMMITTED
+ w/main.go
+ ─ Workers ─────────────────────────────────────────────
+  ✓  worker-0  tui-opencode-1
+
+=== split layout — worker detail (w -> Enter) ===
+[17:53:37] tool call: read {"filePath":".../.limen/worktrees/task-tui-opencode-1/main.go"}
+[17:53:40] tool call: edit {"filePath":".../main.go","newString":"func add(a, b int) int {\n\treturn a + b\n}","oldString":"// BUG: This function subtracts instead of adds\nfunc add(a, b int) int {\n\treturn a - b\n}"}
+[17:53:44] tool call: bash {"command":"go test ./...","workdir":".../.limen/worktrees/task-tui-opencode-1"}
+[17:53:48] criterion "placeholder_criterion": PASS
+[17:53:48] verdict: PASS — Command "go test ./..." passed:
+           ok      example.com/test-repo    0.002s
+[17:53:48] tool call: bash {"command":"limen ready-for-review --task-id tui-opencode-1 --summary \"Changed return a - b to return a + b in the add function to fix the subtraction bug.\"","workdir":".../.limen/worktrees/task-tui-opencode-1"}
+[17:53:51] agent: Fix applied: changed `return a - b` to `return a + b` in `main.go:12`. The test passes.

@@ -1,0 +1,39 @@
+Dialect: claude (RPC-family, stream-json)   Worker CLI: claude 2.1.195
+Run: task-id=tui-claude-1  worker=claude  validator=shell "go test ./..."
+     fixture=buggy-add (Go)  coverage-floor=0 confidence-floor=0
+Outcome: COMMITTED, retries:0  (2026-07-25 ~17:50)
+Rendering: full WorkerToolCall + WorkerAgentMessage stream (Read/Edit/Bash),
+           validator criterion + verdict, worker detail via w -> Enter.
+
+=== split layout — timeline focus (full screen) ===
+ limen  task tui-claude-1                                                                                                                                                                COMMITTED  retries:0  expands:0  ✓
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ─ Router ────────────────────────────────────────────────────────│[17:50:16] context built: 676 bytes
+[17:50:16] Context built: 676 bytes                               │├─ CREATED → CONTEXT_BUILDING
+[17:50:16] Router examining: entropy=0.000                        │└─ CONTEXT_BUILDING → ROUTING_EVALUATION
+[17:50:16] Router decision: PROCEED — sufficient confidence and   │[17:50:16] router: PROCEED — sufficient confidence and coverage
+           coverage                                               │└─ ROUTING_EVALUATION → WORKER_RUNNING
+                                                                  │[17:50:16] worker started (retry=0)
+                                                                  │└─ WORKER_RUNNING → AWAITING_VALIDATION
+                                                                  │[17:50:32] verdict: PASS — Command "go test ./..." passed:
+                                                                  │           ok      example.com/test-repo    0.002s
+                                                                  │└─ AWAITING_VALIDATION → APPROVED
+                                                                  │[17:50:36] worker finished
+                                                                  │└─ APPROVED → COMMITTED
+                                                                  │[17:50:36] FINALIZED: state=COMMITTED output="diff --git c/main.go w/main.go index 4df..."
+ FINAL: COMMITTED
+ w/main.go
+ ─ Workers ─────────────────────────────────────────────
+  ✓  worker-0  tui-claude-1
+
+=== split layout — worker detail (w -> Enter) ===
+[17:50:20] agent: I'll fix the bug in the `add` function.
+[17:50:21] tool call: Read {"file_path":".../tmp/test-repo/.limen/worktrees/task-tui-claude-1/main.go"}
+[17:50:25] tool call: Edit {"file_path":".../main.go","new_string":"func add(a, b int) int {\n\treturn a + b\n}","old_string":"// BUG: This function subtracts instead of adds\nfunc add(a, b int) int {\n\treturn a - b\n}","replace_all":false}
+[17:50:27] tool call: Bash {"command":"go test ./...","description":"Run Go tests"}
+[17:50:30] agent: Test passes. Now I'll submit for review.
+[17:50:31] tool call: Bash {"command":"limen ready-for-review --task-id tui-claude-1 --summary \"Fixed the add function to return a + b instead of a - b. TestAdd now passes.\"","description":"Submit for review"}
+[17:50:32] criterion "placeholder_criterion": PASS
+[17:50:32] verdict: PASS — Command "go test ./..." passed:
+           ok      example.com/test-repo    0.002s
+[17:50:34] agent: The fix is approved. I changed `add` to return `a + b` instead of `a - b`, removed the now-inaccurate BUG comment, and confirmed `TestAdd` passes. The review verdict came back approved.

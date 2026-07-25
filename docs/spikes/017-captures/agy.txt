@@ -1,0 +1,39 @@
+Dialect: agy (one-shot family, plain text)   Worker CLI: agy 1.1.5
+Run: task-id=tui-agy-1  worker=agy  validator=shell "go test ./..."
+     fixture=buggy-add (Go)  coverage-floor=0 confidence-floor=0
+Outcome: COMMITTED, retries:0  (2026-07-25 ~17:56, worker turn ~2m)
+Rendering: NO tool-call / agent-message stream. agy's decode (decodeAgyEvent)
+           emits no bus events — the driver scans to EOF — so only the worker
+           Started/Finished breadcrumbs surface in the timeline. This matches
+           the documented dialect contract (agy is the thinnest one-shot
+           dialect; git-poll breadcrumbs are a future slice). The worker-detail
+           pane therefore holds only the validator criterion + verdict lines
+           (those are appended to the selected worker's detail by the model),
+           never a WorkerToolCall. NOT a limen bug.
+
+=== split layout — timeline focus (full screen) ===
+ limen  task tui-agy-1                                                                                                                                                                   COMMITTED  retries:0  expands:0  ✓
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ─ Router ────────────────────────────────────────────────────────│[17:54:57] context built: 673 bytes
+[17:54:57] Context built: 673 bytes                               │├─ CREATED → CONTEXT_BUILDING
+[17:54:57] Router examining: entropy=0.000                        │└─ CONTEXT_BUILDING → ROUTING_EVALUATION
+[17:54:57] Router decision: PROCEED — sufficient confidence and   │[17:54:57] router: PROCEED — sufficient confidence and coverage
+           coverage                                               │└─ ROUTING_EVALUATION → WORKER_RUNNING
+                                                                  │[17:54:57] worker started (retry=0)
+                                                                  │└─ WORKER_RUNNING → AWAITING_VALIDATION
+                                                                  │[17:56:54] verdict: PASS — Command "go test ./..." passed:
+                                                                  │           ok      example.com/test-repo    0.002s
+                                                                  │└─ AWAITING_VALIDATION → APPROVED
+                                                                  │[17:56:57] worker finished
+                                                                  │└─ APPROVED → COMMITTED
+                                                                  │[17:56:58] FINALIZED: state=COMMITTED output="diff --git c/main.go w/main.go index 4df..."
+ FINAL: COMMITTED
+ w/main.go
+ ─ Workers ─────────────────────────────────────────────
+  ✓  worker-0  tui-agy-1
+
+=== split layout — worker detail (w -> Enter) ===
+[17:56:54] criterion "placeholder_criterion": PASS
+[17:56:54] verdict: PASS — Command "go test ./..." passed:
+           ok      example.com/test-repo    0.002s
+(no tool-call or agent-message lines — agy emits none)
