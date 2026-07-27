@@ -8,6 +8,7 @@ Run:  python3 -m pytest scripts/spike-agy-mcp/test_spike.py
 """
 import os
 import re
+import subprocess
 import sys
 
 import pytest
@@ -19,6 +20,7 @@ from mcp_breadcrumb_server import record_breadcrumb, LOG_ENV, TOOL_NAME  # noqa:
 from mcp_client import MCPStdioClient  # noqa: E402
 
 SERVER = os.path.join(HERE, "mcp_breadcrumb_server.py")
+FAKE_CLI = os.path.join(HERE, "fake_cli.py")
 ISO_LINE = re.compile(r"^\d{4}-\d{2}-\d{2}T[\d:.+\-]+\t(.*)$")
 
 
@@ -74,3 +76,20 @@ def test_stateless_two_calls_independent(tmp_path):
         c.call_tool(TOOL_NAME, {"message": "second"})
     msgs = [ISO_LINE.match(ln).group(1) for ln in _read_lines(str(log))]
     assert msgs == ["first", "second"]
+
+
+# --- Slice 1: fake-CLI harness (plumbing proof) -----------------------------
+
+@pytest.mark.parametrize("n", [1, 3, 7])
+def test_fake_cli_records_exactly_n_in_order(tmp_path, n):
+    """A cooperative fake agent calling the tool N times mid-run must yield
+    exactly N recorded breadcrumbs, in order. Proves server+client+recorder end
+    to end so the real run's only unknown is model behavior."""
+    log = tmp_path / "bc.log"
+    proc = subprocess.run(
+        [sys.executable, FAKE_CLI, SERVER, str(n), "step"],
+        env=_server_env(log), capture_output=True, text=True, timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    msgs = [ISO_LINE.match(ln).group(1) for ln in _read_lines(str(log))]
+    assert msgs == [f"step-{i}" for i in range(n)]
