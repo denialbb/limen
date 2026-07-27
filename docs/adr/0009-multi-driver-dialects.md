@@ -131,3 +131,104 @@ package is untouched** (the seam's proof).
   documented fallback but was not needed.
 - Non-goals (unchanged): session resume across retries, git-poll breadcrumbs,
   MCP server, sandboxing (trusted posture, PRD #15), opencode `serve`/ACP.
+
+## Addendum (2026-07-27): MCP as an *integration layer* for agy — scope
+
+ correction and the status-update question
+
+### Scope correction — driver vs. integration layer
+
+§1 rejected an **MCP server as the agent-driver** (prompt delivery, process
+lifecycle, observability over MCP). A later question asked whether MCP could
+instead serve as a lighter **integration layer** for *agy specifically* —
+exposing limen-owned MCP tools the agent calls mid-task to surface **status /
+progress breadcrumbs**, closing the `WorkerStarted → (black box) →
+WorkerFinished` gap of the one-shot agy dialect. This is a *different*
+proposition and is recorded here so the §1 rejection is not misread as
+covering it.
+
+### Verified facts (`docs/spikes/agy-mcp-integration.md`)
+
+Spiked independently and reproduced against the installed `agy` (1.1.5
+lineage): agy is a battle-tested MCP **client** (OAuth, remote servers,
+per-call timeouts, `inheritMcp`), so mid-run tool invocation is **mechanically
+feasible**. But MCP config is **HOME-scoped only**
+(`~/.gemini/config/mcp_config.json`) — no `--mcp-config` flag, no subcommand,
+no project-local file, and `inheritMcp` only toggles inheritance of
+globally-defined servers. A limen-owned MCP server would **load for every agy
+invocation on the machine**, not just limen tasks.
+
+### Why it does not fit status/progress — four design-principle arguments
+
+1. **Intent-based Tools ≠ observability exhaust** (`tool_contracts.md`,
+   `design_principles.md`). The MCP tool contracts (`submit_work`, `approve`,
+   `request_revision`, `request_more_context`, `expand_context`) all express
+   **intent** — high-level actions, not system mechanics. A
+   `report_progress` / `update_status` tool is the opposite — system-mechanics
+   exhaust a tool protocol should not carry. The §1 `limen` binary callbacks
+   (`ready-for-review` / `submit-verdict`) already express the intent-level
+   contract over a proven SQLite channel; adding MCP tools for *mechanics*
+   inverts the invariant.
+2. **Capability Isolation over prompt discipline.** MCP tool calls are
+   **pull, model-gated**: the model must *voluntarily* and repeatedly call the
+   breadcrumb tool for limen to learn anything. The principle says don't rely
+   on prompt discipline — make the correct behavior physically unavoidable.
+   limen **cannot guarantee a breadcrumb every N seconds** under MCP; git-poll
+   (PRD #13) controls cadence deterministically. Observability should not
+   depend on model goodwill.
+3. **Determinism boundary (PRD #14).** Fine-grained streams are **ephemeral by
+   principle** — generation exhaust is transient, canonical outcomes persist.
+   Coupling a *transient* need to *durable* infrastructure (a server process,
+   config injection, tool routing) is the wrong direction. The
+   transient/agnostic answer is git-poll over the worktree filesystem, not a
+   new transport.
+4. **No Hidden State in MCP (`design_principles.md`).** Should MCP ever return
+   to limen it must stay a **strictly stateless adapter** — no task state, no
+   cached decisions, no workflow memory. A HOME-scoped server reachable from
+   every agy run, plus model-supplied `task_id` arguments, erodes
+   **task/identity binding (PRD #10)** — identity is bound at the trusted
+   spawn boundary (cwd = worktree + spawn args), never agent-supplied. The
+   subprocess-worktree binding is strictly stronger than any model-invoked
+   tool routing.
+
+### Does this fire the §1 revisit trigger?
+
+**No.** The trigger is *"an agent with no shell execution, or a pull-model
+retrieval contract."* agy has shell and uses it (the blocking
+`ready-for-review` bash call is how in-process revision holds the agent loop
+open, §2); retrieval is **push-via-prompt** (ADR 0007). Neither condition
+holds. The status-update need is **orthogonal**: it concerns **limen watching
+the agent**, not the agent calling limen — and MCP serves that poorly
+(model-gated) regardless.
+
+### Decision
+
+**Reject MCP as an integration layer for agy status/progress now.** Observed
+breadcrumbs ship via **git-poll (PRD #13)** — deterministic, dialect-agnostic
+(covers any future eventless CLI, not just agy), trivially inside the future
+**sandbox (PRD #15)** since it reads the worktree filesystem, and ~one
+goroutine of cost. MCP's one genuine edge — *structured* events — is exactly
+the property it cannot guarantee here (model-gated pull).
+
+**Defer MCP to the real trigger, narrowly.** If §1's revisit trigger actually
+fires — a **no-shell gated CLI**, or a **pull-model retrieval contract** —
+MCP becomes the callback/tool transport of last resort, exactly as §1 frames
+it. The one concrete case worth naming: exposing limen's **retrieval** as an
+MCP `fetch_context` tool so a gated agent can *pull* context — that *is* the
+ADR 0007 pull-contract, i.e. the actual trigger, but it concerns
+**retrieval, not status**, and is out of scope here. The sandbox/control arc
+(PRD #15) is the other legitimate home: there MCP earns its keep as *gated
+write control*, and status falls out as a free side effect of every gated
+`file_edit`.
+
+### Status of non-goals
+
+Unchanged. "git-poll breadcrumbs" and "MCP server" remain non-goals; this
+addendum only sharpens *which* need each is the answer to, so a future reader
+doesn't conflate the driver rejection (§1) with the integration-layer
+question.
+
+An empirical TDD spike (`issues/spike-agy-mcp-empirical.md`) is running to
+confirm the model-gated-pull inference (does `agy --print` actually invoke a
+limen-provided MCP tool mid-run, and how reliably?); its verdict is appended
+to `docs/spikes/agy-mcp-integration.md`.
