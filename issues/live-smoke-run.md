@@ -30,8 +30,10 @@ Run a real, committed end-to-end test of the multi-driver dialect backends.
 ## Context
 
 - Branch: `main` (multi-driver dialects already merged)
-- All gated e2e tests pass (`LIMEN_E2E_REAL_AGENTS=1 go test ./internal/remote/ -run RealBinary`)
-- This is the first actual committed run with real backends (previous tests used fakes or mocks)
+- All gated e2e tests pass
+  (`LIMEN_E2E_REAL_AGENTS=1 go test ./internal/remote/ -run RealBinary`)
+- This is the first actual committed run with real backends
+  (previous tests used fakes or mocks)
 - See `docs/adr/0009` for the dialect architecture
 
 ## Verification
