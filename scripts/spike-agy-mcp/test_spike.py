@@ -18,6 +18,7 @@ sys.path.insert(0, HERE)
 
 from mcp_breadcrumb_server import record_breadcrumb, LOG_ENV, TOOL_NAME  # noqa: E402
 from mcp_client import MCPStdioClient  # noqa: E402
+import scope  # noqa: E402
 
 SERVER = os.path.join(HERE, "mcp_breadcrumb_server.py")
 FAKE_CLI = os.path.join(HERE, "fake_cli.py")
@@ -93,3 +94,66 @@ def test_fake_cli_records_exactly_n_in_order(tmp_path, n):
     assert proc.returncode == 0, proc.stderr
     msgs = [ISO_LINE.match(ln).group(1) for ln in _read_lines(str(log))]
     assert msgs == [f"step-{i}" for i in range(n)]
+
+
+# --- Slice 2: HOME-scoped config + no-pollution -----------------------------
+
+def test_build_scoped_home_writes_only_under_root(tmp_path):
+    root = tmp_path / "scoped-home"
+    log = tmp_path / "bc.log"
+    env, config_path = scope.build_scoped_home(str(root), SERVER, str(log))
+
+    # Config landed under the scoped HOME with agy's schema.
+    assert config_path == str(root / ".gemini" / "config" / "mcp_config.json")
+    assert os.path.exists(config_path)
+    cfg = __import__("json").load(open(config_path))
+    entry = cfg["mcpServers"][scope.SERVER_ID]
+    assert entry["args"] == [SERVER]
+    assert entry["env"][scope.BREADCRUMB_LOG_ENV] == str(log)
+
+    # The returned env re-homes agy into the tmp root.
+    assert env["HOME"] == str(root)
+    assert env["HOME"] != os.path.expanduser("~")
+
+
+def test_real_gemini_is_never_touched(tmp_path):
+    """Non-negotiable: building a scoped home must not create, delete, or modify
+    anything under the user's real ~/.gemini (metadata snapshot, before/after)."""
+    real_gemini = os.path.expanduser("~/.gemini")
+    before = scope.snapshot_tree(real_gemini)
+    real_existed = os.path.exists(real_gemini)
+
+    root = tmp_path / "scoped-home"
+    log = tmp_path / "bc.log"
+    scope.build_scoped_home(str(root), SERVER, str(log))
+
+    after = scope.snapshot_tree(real_gemini)
+    assert after == before, "real ~/.gemini was mutated by the spike harness"
+    # And building must not have conjured a real ~/.gemini where none existed.
+    assert os.path.exists(real_gemini) == real_existed
+
+    # build_scoped_home must not mutate the live process environment either.
+    assert os.environ.get("HOME") != str(root)
+
+
+def test_diag_captures_server_lifecycle(tmp_path):
+    """The lifecycle diagnostics sink must record start -> initialize ->
+    tools/list -> tools/call, so the real run can distinguish 'server loaded but
+    model never called it' from 'server never loaded'."""
+    log = tmp_path / "bc.log"
+    diag = tmp_path / "diag.log"
+    env = _server_env(log)
+    env[scope.DIAG_ENV] = str(diag)
+    with MCPStdioClient([sys.executable, SERVER], env=env) as c:
+        c.initialize()
+        c.list_tools()
+        c.call_tool(TOOL_NAME, {"message": "hi"})
+    events = [ln.split("\t")[1] for ln in _read_lines(str(diag))]
+    assert events == ["start", "initialize", "tools/list", "tools/call"]
+
+
+def test_build_scoped_home_does_not_mutate_os_environ(tmp_path):
+    sentinel_before = dict(os.environ)
+    root = tmp_path / "scoped-home"
+    scope.build_scoped_home(str(root), SERVER, str(tmp_path / "bc.log"))
+    assert dict(os.environ) == sentinel_before

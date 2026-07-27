@@ -25,6 +25,12 @@ import sys
 
 TOOL_NAME = "limen_breadcrumb"
 LOG_ENV = "LIMEN_BREADCRUMB_LOG"
+# Optional lifecycle diagnostics sink. Written to iff LIMEN_SPIKE_DIAG is set.
+# Kept SEPARATE from the breadcrumb log so the breadcrumb log stays a clean
+# record of actual model tool-calls, while diagnostics answer the spike's
+# pivotal question: was the server even loaded/initialized by agy (vs. loaded
+# but never called by the model)?
+DIAG_ENV = "LIMEN_SPIKE_DIAG"
 # Advertised only for negotiation; we echo the client's requested version when
 # present so we interoperate with whatever protocol revision agy speaks.
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
@@ -43,6 +49,21 @@ def record_breadcrumb(log_path, message, now=None):
         fh.write(line + "\n")
         fh.flush()
     return line
+
+
+def _diag(event, detail=""):
+    """Append a lifecycle event to the diagnostics sink, if configured. Best
+    effort — diagnostics must never break the server."""
+    path = os.environ.get(DIAG_ENV)
+    if not path:
+        return
+    try:
+        ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(f"{ts}\t{event}\t{detail}\n")
+            fh.flush()
+    except OSError:
+        pass
 
 
 def _tool_definition():
@@ -79,6 +100,8 @@ def handle_request(msg, log_path):
 
     if method == "initialize":
         client_ver = (msg.get("params") or {}).get("protocolVersion")
+        client_info = (msg.get("params") or {}).get("clientInfo") or {}
+        _diag("initialize", f"{client_info.get('name','?')}/{client_ver}")
         return _result(msg_id, {
             "protocolVersion": client_ver or DEFAULT_PROTOCOL_VERSION,
             "capabilities": {"tools": {}},
@@ -89,6 +112,7 @@ def handle_request(msg, log_path):
         return _result(msg_id, {})
 
     if method == "tools/list":
+        _diag("tools/list")
         return _result(msg_id, {"tools": [_tool_definition()]})
 
     if method == "tools/call":
@@ -99,6 +123,7 @@ def handle_request(msg, log_path):
         if not isinstance(message, str):
             return _error(msg_id, -32602, "missing string argument 'message'")
         record_breadcrumb(log_path, message)
+        _diag("tools/call", message)
         return _result(msg_id, {
             "content": [{"type": "text", "text": "recorded"}],
             "isError": False,
@@ -136,6 +161,7 @@ def main():
     if not log_path:
         sys.stderr.write(f"{LOG_ENV} is required\n")
         return 2
+    _diag("start", f"pid={os.getpid()}")
     serve(sys.stdin, sys.stdout, log_path)
     return 0
 
