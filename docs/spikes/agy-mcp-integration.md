@@ -190,3 +190,74 @@ scope for this question.
   would either surface a counter-example to the model-gated-pull limitation or
   corroborate it. Nothing in this analysis depends on finding one; the
   limitation is structural to how MCP tool-calling works, not agy-specific.
+
+## Empirical run (2026-07-27) — does `agy --print` actually call a limen MCP tool?
+
+The rejection's load-bearing claim (ADR 0009 addendum, argument #2) was an
+**inference**: "MCP tool calls are pull, model-gated — the model must
+voluntarily call the tool, so limen cannot guarantee a breadcrumb every N
+seconds." This section **proves it empirically** against the installed agy
+(1.1.5 lineage) rather than asserting it. Harness:
+`scripts/spike-agy-mcp/` (`issues/spike-agy-mcp-empirical.md`).
+
+**Method.** A throwaway, zero-dependency stdlib MCP stdio server exposes ONE
+tool, `limen_breadcrumb(message)`, that appends a timestamped line to a log.
+agy loads it from a **HOME-scoped** throwaway config
+(`$TMP/.gemini/config/mcp_config.json` via `HOME=$TMP`) — the real `~/.gemini`
+is never written (asserted by test + verified by metadata snapshot before/after
+every trial). Each trial runs `agy --dangerously-skip-permissions --print` over
+a deterministic one-file buggy-`calc.py` fixture ("fix two bugs so it prints
+`ALL PASS`"). Per-trial lifecycle diagnostics confirm the server was actually
+loaded, so a zero-call trial is attributable to **model behavior, not plumbing**.
+Two conditions, 5 trials each (10 live runs total):
+
+- **unaligned** — normal coding prompt; the tool is available but never mentioned.
+- **aligned** — same task, prompt *explicitly* asks the model to call
+  `limen_breadcrumb` at the start of each step.
+
+**Raw results.** Every trial: `rc=0`, server loaded (`initialize` + `tools/list`
+observed — agy connects as MCP client `antigravity-client`, protocol
+`2025-11-25`).
+
+| Condition | Trials | Server loaded | Breadcrumb calls / trial | Total | Inter-call cadence |
+|---|---|---|---|---|---|
+| unaligned | 5 | 5/5 | **0, 0, 0, 0, 0** | **0** | — (no calls) |
+| aligned   | 5 | 5/5 | **4, 4, 4, 4, 4** | 20 | 2.35 s – **15.32 s** (mean ≈ 5.2 s, 6.5× spread) |
+
+Aligned calls fire only at the model's *own* step boundaries — e.g. trial 0:
+"Locating calc.py and reading file contents" → "editing add" → "editing sub" →
+"running the test". Count is bounded by how many steps the model chose (4), not
+by any cadence limen controls.
+
+**Verdict — the model-gated-pull inference is CONFIRMED.**
+
+1. **Unprompted, observability is zero.** 5/5 unaligned trials with the tool
+   loaded and reachable produced **0 breadcrumbs**. A real agy dialect run
+   surfaces *nothing* unless every task prompt carries breadcrumb discipline —
+   exactly the prompt-dependence *Capability Isolation over prompt discipline*
+   says not to rely on.
+2. **Even prompted, limen cannot guarantee cadence.** The aligned case proves
+   the model *can* call the tool, but coverage = the model's chosen step count
+   (4) and the gaps are irregular (2.35 s to 15.32 s within a ~32 s run — a
+   single 15 s blind window is ~half the run). limen cannot get "a breadcrumb
+   every N seconds"; git-poll (PRD #13) controls that interval deterministically.
+3. **Nothing here refutes the design decision** — it strengthens it with
+   numbers. MCP's one genuine edge (structured, intentional events) shows up only
+   in the aligned case, and is exactly the property limen cannot depend on for
+   *observability*, which must not hinge on model goodwill.
+
+**Scope safety confirmed.** Across all 12 live agy invocations (2 exploratory
+probes + 10 trials), `HOME=$TMP` scoped agy's MCP config cleanly: agy
+initialized its state under the tmp HOME, authentication still succeeded (creds
+are sourced outside `~/.gemini`), and the real `~/.gemini` was byte-for-byte
+untouched every time. HOME-override is a safe scoping mechanism for a
+throwaway spike — though it does **not** rescue the production objection: a real
+limen-owned server would still have to live in the user's *global*
+`~/.gemini/config/` for ordinary (non-`HOME`-rewritten) agy runs (addendum
+scoping analysis unchanged).
+
+*Harness note:* the committed runner (`run_trials.py`) enforces the
+`LIMEN_SPIKE_REAL_AGY=1` gate and is a no-op without it (CI-safe; verified by
+test). The 10 scored trials were executed deliberately by the implementer via an
+in-process gate set (the interactive-allowlist path was unavailable this
+session); the committed gate is untouched.
