@@ -152,6 +152,35 @@ def test_diag_captures_server_lifecycle(tmp_path):
     assert events == ["start", "initialize", "tools/list", "tools/call"]
 
 
+# --- Slice 3: gated real run -------------------------------------------------
+
+RUNNER = os.path.join(HERE, "run_trials.py")
+
+
+def test_run_trials_is_gated_off_by_default(tmp_path):
+    """Without LIMEN_SPIKE_REAL_AGY=1 the runner must be a no-op and must NOT
+    invoke agy (keeps CI/token-free). It should return fast with a gated notice."""
+    env = dict(os.environ)
+    env.pop("LIMEN_SPIKE_REAL_AGY", None)
+    proc = subprocess.run(
+        [sys.executable, RUNNER, "--trials", "1"],
+        env=env, capture_output=True, text=True, timeout=20,
+    )
+    assert proc.returncode == 0
+    assert "[gated]" in proc.stdout
+
+
+@pytest.mark.skipif(os.environ.get("LIMEN_SPIKE_REAL_AGY") != "1",
+                    reason="real agy run; set LIMEN_SPIKE_REAL_AGY=1")
+def test_real_agy_single_trial_loads_server(tmp_path):
+    """Sanity: one gated aligned trial must at least LOAD the server (proves the
+    real-agy plumbing); call count is what the full matrix measures."""
+    import run_trials
+    r = run_trials.run_trial("aligned", 0)
+    assert r["server_loaded"], r
+    assert r["tools_listed"], r
+
+
 def test_build_scoped_home_does_not_mutate_os_environ(tmp_path):
     sentinel_before = dict(os.environ)
     root = tmp_path / "scoped-home"
