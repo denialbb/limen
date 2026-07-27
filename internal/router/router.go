@@ -55,10 +55,10 @@ func NewRouter(coverageFloor, confidenceFloor float64) *Router {
 //
 // Cascade (ADR 0005):
 //
-//	0. coverage_hint == 0                          → ESCALATE (escape hatch)
-//	1. coverage_hint < CoverageFloor   (> 0)        → EXPAND
-//	2. else, confidence < ConfidenceFloor           → ESCALATE
-//	3. else                                         → PROCEED
+//  0. coverage_hint == 0                          → ESCALATE (escape hatch)
+//  1. coverage_hint < CoverageFloor   (> 0)        → EXPAND
+//  2. else, confidence < ConfidenceFloor           → ESCALATE
+//  3. else                                         → PROCEED
 //
 // If the snapshot is empty or malformed, the Router defaults to PROCEED as a
 // defensive fallback.
