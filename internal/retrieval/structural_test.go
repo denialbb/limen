@@ -34,6 +34,40 @@ func TestStructuralStage_DefinitionChunkBoostsOverCall(t *testing.T) {
 	}
 }
 
+// TestStructuralStage_NormalizesBoost pins the boost actually applied: a
+// non-positive Boost falls back to exactly 1.0, and a positive one is used
+// as given. The existing tests only assert "> 0" for a definition chunk, which
+// holds for any boost value at all — including one that ignores the field.
+func TestStructuralStage_NormalizesBoost(t *testing.T) {
+	query := retrieval.StageQuery{Whole: []string{"retrieve"}, Terms: []string{"retrieve"}}
+	candidates := []retrieval.Chunk{
+		{Path: "def.go", Text: "func Retrieve(ctx) error {\n\treturn nil\n}\n"},
+	}
+
+	tests := []struct {
+		name  string
+		boost float64
+		want  float64
+	}{
+		{"zero boost falls back to 1.0", 0, 1.0},
+		{"negative boost falls back to 1.0", -3, 1.0},
+		{"fractional boost is honored", 0.5, 0.5},
+		{"boost above one is honored", 2, 2},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			scored, err := retrieval.StructuralStage{Boost: tc.boost}.Rank(query, candidates)
+			if err != nil {
+				t.Fatalf("Rank: %v", err)
+			}
+			if scored[0].Score != tc.want {
+				t.Errorf("Boost=%v produced score %v, want %v", tc.boost, scored[0].Score, tc.want)
+			}
+		})
+	}
+}
+
 func TestPipeline_StructuralStage_BreaksBM25Tie(t *testing.T) {
 	// Two chunks where BM25 ties (both mention Retrieve once) but structural
 	// boost ranks the definition first.

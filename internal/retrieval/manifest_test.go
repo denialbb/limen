@@ -90,4 +90,29 @@ func TestRenderContextSection_FencedChunks(t *testing.T) {
 	if !strings.Contains(s, "```go") || !strings.Contains(s, "func foo()") {
 		t.Errorf("expected fenced ```go block with text, got %q", s)
 	}
+
+	// The substring checks above are each satisfied by many different layouts:
+	// they cannot see a missing newline between the header and the fence, or a
+	// dropped blank line between chunks. The rendered section is fed to the
+	// worker verbatim, so pin it byte for byte.
+	want := "## Context\n\na.go:1-2\n```go\nfunc foo() {\n}\n```\n"
+	if s != want {
+		t.Errorf("rendered section mismatch:\n got %q\nwant %q", s, want)
+	}
+}
+
+// TestRenderContextSection_SeparatesMultipleChunks pins the separator between
+// chunks: each block ends with a blank line, and only the final trailing
+// newline is trimmed.
+func TestRenderContextSection_SeparatesMultipleChunks(t *testing.T) {
+	m := retrieval.Manifest{
+		Chunks: []retrieval.Chunk{
+			{Path: "a.go", LineStart: 1, LineEnd: 1, Text: "one\n"},
+			{Path: "b.py", LineStart: 4, LineEnd: 4, Text: "two\n"},
+		},
+	}
+	want := "## Context\n\na.go:1-1\n```go\none\n```\n\nb.py:4-4\n```python\ntwo\n```\n"
+	if got := retrieval.RenderContextSection(m); got != want {
+		t.Errorf("rendered section mismatch:\n got %q\nwant %q", got, want)
+	}
 }

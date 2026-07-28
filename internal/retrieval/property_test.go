@@ -210,6 +210,63 @@ func TestAnalyzer_SecondPassIsSuperset(t *testing.T) {
 	}
 }
 
+// TestSplitIdentifier_BoundaryClassification pins the exact split for each
+// character-class transition splitIdentifier recognizes, and for the alphabet
+// edges of each class.
+//
+// The properties above constrain the token *set* (lowercased, non-empty,
+// alphanumeric, a superset on re-analysis) and Analyze always emits the whole
+// lowercased field alongside the pieces, so a piece that is mis-split or
+// dropped entirely is invisible to them: the whole-token form still carries the
+// text. These cases assert the pieces themselves.
+//
+// The alphabet edges matter because the classifier uses inclusive range
+// comparisons ('a' <= r <= 'z' and friends). Narrowing any bound to an
+// exclusive one reclassifies exactly one character as a separator, which
+// silently deletes it from every piece it appears in.
+func TestSplitIdentifier_BoundaryClassification(t *testing.T) {
+	tests := []struct {
+		id   string
+		want []string
+	}{
+		// Separator splitting, including single-character pieces: a piece of
+		// length 1 is still a piece.
+		{"a", []string{"a"}},
+		{"a_b", []string{"a", "b"}},
+		{"parse.Http2Request", []string{"parse", "Http2", "Request"}},
+
+		// camelCase: an upper-after-lower transition splits...
+		{"getU", []string{"get", "U"}},
+		{"UserName", []string{"User", "Name"}},
+		// ...and a lower-after-upper transition splits only when it leaves a
+		// non-empty acronym behind, so an initial capital stays attached.
+		{"Abc", []string{"Abc"}},
+		{"ABc", []string{"AB", "c"}},
+		{"ABC", []string{"ABC"}},
+
+		// Digits attach to the run they appear in, and an upper-after-digit
+		// transition splits.
+		{"a0", []string{"a0"}},
+		{"a9", []string{"a9"}},
+		{"x1Y2", []string{"x1", "Y2"}},
+
+		// Alphabet edges of each class: 'a', 'z', 'A', 'Z', '0' and '9' are all
+		// content characters, never separators.
+		{"az", []string{"az"}},
+		{"AZ", []string{"AZ"}},
+		{"Zoo", []string{"Zoo"}},
+		{"z0", []string{"z0"}},
+		{"a09z", []string{"a09z"}},
+	}
+
+	for _, tc := range tests {
+		got := splitIdentifier(tc.id)
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("splitIdentifier(%q) = %#v, want %#v", tc.id, got, tc.want)
+		}
+	}
+}
+
 // --- Slice 2: Chunker (LineWindowChunker) ----------------------------------
 
 // chunkerInput is a generated (content, window, overlap) triple in the
@@ -783,6 +840,18 @@ func TestConfidence_ZeroWithoutEvidence(t *testing.T) {
 		if got := confidence(in.TopScore, nil, in.Candidates); got != 0 {
 			return false
 		}
+		// A query the corpus cannot answer at all: the terms occur in no
+		// candidate, so every per-term IDF is skipped and the summed IDF stays
+		// 0. That zero is a denominator — without the guard the ratio is
+		// +Inf, which saturates to a confident 1.0 on evidence that does not
+		// exist. NUL cannot appear in an analyzed token, so the term is
+		// guaranteed absent whatever the generator produced.
+		if len(in.Candidates) > 0 {
+			absent := []string{"\x00absent-from-every-chunk"}
+			if got := confidence(math.Abs(in.TopScore)+1, absent, in.Candidates); got != 0 {
+				return false
+			}
+		}
 		return true
 	}
 	if err := quick.Check(f, propConfig(31, 300)); err != nil {
@@ -1143,6 +1212,8 @@ func TestHasNonTrivialForm_EdgeCases(t *testing.T) {
 		{"7", false},       // single digit
 		{"42", false},      // pure digits
 		{"007", false},     // pure digits with leading zeros
+		{"99", false},      // pure digits at the top of the digit range
+		{"90", false},      // both ends of the digit range in one term
 		{"go", true},       // two letters
 		{"x1", true},       // letter plus digit
 		{"1x", true},       // digit plus letter
