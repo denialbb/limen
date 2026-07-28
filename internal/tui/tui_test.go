@@ -202,6 +202,90 @@ func TestEventRouting(t *testing.T) {
 	}
 }
 
+// TestBreadcrumbRouting covers the git-poll breadcrumbs of eventless dialects
+// (PRD #13): they render in the Worker tab as coarse activity, and they stay
+// out of the Timeline, which mirrors the audited SQLite record that breadcrumbs
+// never enter (determinism boundary §2).
+func TestBreadcrumbRouting(t *testing.T) {
+	b := bus.NewChannelBus()
+	defer b.Close()
+	m := newSizedModel(t, "task-crumbs", b)
+
+	now := time.Now()
+	m = publishAndPump(t, m, b, &bus.WorkerStarted{TaskID: "task-crumbs", WorktreePath: "/tmp/wt", Timestamp: now})
+	timelineBefore := len(m.timeline.Lines())
+
+	m = publishAndPump(t, m, b, &bus.WorkerBreadcrumb{
+		TaskID: "task-crumbs",
+		Files: []bus.BreadcrumbFile{
+			{Path: "internal/remote/agent.go", Status: " M"},
+			{Path: "notes.txt", Status: "??"},
+		},
+		Timestamp: now,
+	})
+
+	workerLines := m.worker.Lines()
+	if len(workerLines) != 2 {
+		t.Fatalf("worker lines = %v, want 2 (started + breadcrumb)", workerLines)
+	}
+	crumb := workerLines[1]
+	if !strings.Contains(crumb, "Activity:") {
+		t.Fatalf("worker line 1 = %q, want an Activity line", crumb)
+	}
+	if !strings.Contains(crumb, "2 file(s) changed") {
+		t.Fatalf("worker line 1 = %q, want the changed-file count", crumb)
+	}
+	for _, want := range []string{"internal/remote/agent.go", "notes.txt"} {
+		if !strings.Contains(crumb, want) {
+			t.Fatalf("worker line 1 = %q, want it to mention %q", crumb, want)
+		}
+	}
+
+	// The Timeline must not grow: breadcrumbs are ephemeral observability, not
+	// part of the audited record the timeline mirrors.
+	if got := len(m.timeline.Lines()); got != timelineBefore {
+		t.Fatalf("timeline grew from %d to %d lines on a breadcrumb; it must ignore them", timelineBefore, got)
+	}
+	for _, line := range m.timeline.Lines() {
+		if strings.Contains(line, "Activity:") || strings.Contains(line, "notes.txt") {
+			t.Fatalf("breadcrumb leaked into the timeline: %q", line)
+		}
+	}
+}
+
+// TestBreadcrumbRenderingTruncatesPathList keeps the activity line compact no
+// matter how many files a single poll turns up.
+func TestBreadcrumbRenderingTruncatesPathList(t *testing.T) {
+	b := bus.NewChannelBus()
+	defer b.Close()
+	m := newSizedModel(t, "task-crumbs", b)
+
+	var files []bus.BreadcrumbFile
+	for _, p := range []string{"a.go", "b.go", "c.go", "d.go", "e.go", "f.go", "g.go", "h.go", "i.go"} {
+		files = append(files, bus.BreadcrumbFile{Path: p, Status: " M"})
+	}
+	m = publishAndPump(t, m, b, &bus.WorkerBreadcrumb{TaskID: "task-crumbs", Files: files, Timestamp: time.Now()})
+
+	lines := m.worker.Lines()
+	if len(lines) != 1 {
+		t.Fatalf("worker lines = %v, want 1", lines)
+	}
+	crumb := lines[0]
+	if !strings.Contains(crumb, "9 file(s) changed") {
+		t.Fatalf("line = %q, want the full count even when the path list is clipped", crumb)
+	}
+	if !strings.Contains(crumb, "…") {
+		t.Fatalf("line = %q, want an ellipsis marking the clipped path list", crumb)
+	}
+	// The first paths survive; the tail beyond the cap does not.
+	if !strings.Contains(crumb, "a.go") {
+		t.Fatalf("line = %q, want the first path", crumb)
+	}
+	if strings.Contains(crumb, "i.go") {
+		t.Fatalf("line = %q, want the ninth path clipped", crumb)
+	}
+}
+
 func TestTaskStateChangedUpdatesHeader(t *testing.T) {
 	b := bus.NewChannelBus()
 	defer b.Close()

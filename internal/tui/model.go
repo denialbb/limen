@@ -407,7 +407,7 @@ func (m Model) handleResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 //   - Timeline receives ALL events.
 //   - Router receives ContextBuilt, RouterExamining, RouterDecision.
 //   - Worker receives WorkerStarted, WorkerToolCall, WorkerFileEdit,
-//     WorkerFinished, ConflictDetected.
+//     WorkerBreadcrumb, WorkerFinished, ConflictDetected.
 //   - Validator receives ValidatorExamining, ValidatorCriterionResult,
 //     ValidatorVerdict.
 //   - TaskStateChanged updates the header state and the timeline.
@@ -489,6 +489,14 @@ func (m Model) handleBusEvent(msg busEventMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		tabToFlash = int(tabWorker)
+
+	case *bus.WorkerBreadcrumb:
+		// git-poll breadcrumbs (PRD #13) are the eventless dialects' stand-in for
+		// a native tool-call stream: coarse activity in the Worker tab only. The
+		// Timeline ignores them by design — it mirrors the audited SQLite record,
+		// which breadcrumbs never enter (determinism boundary §2).
+		m.worker, _ = m.worker.Update(tabs.EventMsg{Event: e})
 		tabToFlash = int(tabWorker)
 
 	case *bus.WorkerFinished:

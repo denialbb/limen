@@ -2,6 +2,7 @@ package tabs
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -70,11 +71,36 @@ func (w WorkerTab) handleEvent(ev bus.Event) WorkerTab {
 	case *bus.WorkerFileEdit:
 		body := fmt.Sprintf("File edit: %s (%s)", e.Path, e.Op)
 		appendLine(&w.lines, &w.viewport, w.viewport.Width, e.Timestamp, body)
+	case *bus.WorkerBreadcrumb:
+		appendLine(&w.lines, &w.viewport, w.viewport.Width, e.Timestamp, formatBreadcrumb(e.Files))
 	case *bus.ConflictDetected:
 		body := fmt.Sprintf("Conflict detected: %d region(s)", len(e.Regions))
 		appendLine(&w.lines, &w.viewport, w.viewport.Width, e.Timestamp, body)
 	}
 	return w
+}
+
+// breadcrumbPathCap bounds how many paths a single activity line names before
+// it elides the rest. Breadcrumbs are coarse "something is happening" signal,
+// so the count carries the magnitude and the first few paths carry the where.
+const breadcrumbPathCap = 5
+
+// formatBreadcrumb renders a git-poll breadcrumb (PRD #13) as one compact
+// activity line. The full changed-file count is always shown; the path list is
+// clipped to breadcrumbPathCap so a large delta cannot flood the tab.
+func formatBreadcrumb(files []bus.BreadcrumbFile) string {
+	paths := make([]string, 0, breadcrumbPathCap)
+	for _, f := range files {
+		if len(paths) == breadcrumbPathCap {
+			break
+		}
+		paths = append(paths, f.Path)
+	}
+	joined := strings.Join(paths, ", ")
+	if len(files) > len(paths) {
+		joined += ", …"
+	}
+	return fmt.Sprintf("Activity: %d file(s) changed — %s", len(files), joined)
 }
 
 // baseCommitLabel renders the base commit short form, falling back to "HEAD"
