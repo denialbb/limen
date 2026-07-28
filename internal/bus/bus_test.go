@@ -486,6 +486,7 @@ func TestEventKinds(t *testing.T) {
 		{"WorkerStarted", &bus.WorkerStarted{Timestamp: now}, "WorkerStarted"},
 		{"WorkerToolCall", &bus.WorkerToolCall{Timestamp: now}, "WorkerToolCall"},
 		{"WorkerFileEdit", &bus.WorkerFileEdit{Timestamp: now}, "WorkerFileEdit"},
+		{"WorkerBreadcrumb", &bus.WorkerBreadcrumb{Timestamp: now}, "WorkerBreadcrumb"},
 		{"WorkerFinished", &bus.WorkerFinished{Timestamp: now}, "WorkerFinished"},
 		{"ValidatorExamining", &bus.ValidatorExamining{Timestamp: now}, "ValidatorExamining"},
 		{"ValidatorCriterionResult", &bus.ValidatorCriterionResult{Timestamp: now}, "ValidatorCriterionResult"},

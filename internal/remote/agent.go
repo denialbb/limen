@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/denialbb/limen/internal/bus"
@@ -55,6 +56,14 @@ type dialect struct {
 	// the worker prompt. Empty for dialects whose edit tools work; the shared
 	// ready-for-review contract is added by renderWorkerPrompt regardless.
 	constraints string
+	// emitBreadcrumbs opts the dialect into git-poll breadcrumbs (PRD #13): the
+	// driver polls `git status --porcelain` in the worktree while the CLI runs
+	// and publishes the changed-file delta. It is true only for eventless
+	// dialects (agy), which surface no native stream between WorkerStarted and
+	// WorkerFinished. Event-rich dialects (pi/claude/opencode) leave it false —
+	// their WorkerToolCall/WorkerFileEdit/WorkerAgentMessage streams already
+	// carry the activity, and polling would only double the noise.
+	emitBreadcrumbs bool
 }
 
 // agentWorker is the generic worker driver. It launches an agent CLI in the
@@ -65,6 +74,22 @@ type agentWorker struct {
 	dialect dialect
 	cmdArgs []string
 	opts    *options
+	// breadcrumbReader overrides the git-poll seam for tests. Nil in production:
+	// ProduceSolution then builds gitStatusReader(wt.Path), binding the poll to
+	// the worktree the CLI was launched in.
+	breadcrumbReader breadcrumbReader
+	// breadcrumbInterval overrides the poll cadence for tests. Zero means the
+	// breadcrumbInterval default (~1.5s, PRD #13).
+	breadcrumbInterval time.Duration
+}
+
+// pollInterval resolves the breadcrumb cadence: the injected override when a
+// test set one, otherwise the PRD #13 default.
+func (w *agentWorker) pollInterval() time.Duration {
+	if w.breadcrumbInterval > 0 {
+		return w.breadcrumbInterval
+	}
+	return breadcrumbInterval
 }
 
 // newAgentWorker builds a driver from a dialect, resolving its launch argv from
@@ -173,6 +198,39 @@ func (w *agentWorker) ProduceSolution(ctx context.Context, task *state.Task, wt 
 		})
 	}
 
+	// Start git-poll breadcrumbs for eventless dialects (PRD #13), after
+	// WorkerStarted: they are only meaningful while the CLI is running. The
+	// poller is fire-and-forget observability — it publishes onto the bus and
+	// can never fail ProduceSolution. stopBreadcrumbs is deferred so every exit
+	// path (including the error returns below) tears the goroutine down.
+	stopBreadcrumbs := func() {}
+	if w.dialect.emitBreadcrumbs {
+		read := w.breadcrumbReader
+		if read == nil {
+			read = gitStatusReader(wt.Path)
+		}
+		pollCtx, cancelPoll := context.WithCancel(ctx)
+		pollDone := make(chan struct{})
+		go func() {
+			defer close(pollDone)
+			pollBreadcrumbs(pollCtx, w.pollInterval(), read, task.ID, em)
+		}()
+		var stopOnce sync.Once
+		stopBreadcrumbs = func() {
+			stopOnce.Do(func() {
+				cancelPoll()
+				// Wait for the goroutine so no stale breadcrumb can land after
+				// WorkerFinished, but only briefly: a wedged reader must not hold
+				// the worker's completion hostage.
+				select {
+				case <-pollDone:
+				case <-time.After(breadcrumbStopGrace):
+				}
+			})
+		}
+		defer stopBreadcrumbs()
+	}
+
 	// Deliver the prompt per family. One-shot: prompt is in argv, so close stdin
 	// immediately. RPC: write the stdin envelope and keep the pipe open until the
 	// end event.
@@ -223,6 +281,10 @@ func (w *agentWorker) ProduceSolution(ctx context.Context, task *state.Task, wt 
 		}
 		return fmt.Errorf("%s worker: wait: %w", w.dialect.name, err)
 	}
+
+	// Stop the poller before WorkerFinished so the breadcrumb stream cannot
+	// trail past the end of the run.
+	stopBreadcrumbs()
 
 	if em != nil {
 		em.Publish(&bus.WorkerFinished{

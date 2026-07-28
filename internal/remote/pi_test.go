@@ -95,6 +95,8 @@ func eventKind(ev bus.Event) string {
 		return "WorkerToolCall"
 	case *bus.WorkerAgentMessage:
 		return "WorkerAgentMessage"
+	case *bus.WorkerBreadcrumb:
+		return "WorkerBreadcrumb"
 	case *bus.WorkerFinished:
 		return "WorkerFinished"
 	default:

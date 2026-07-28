@@ -312,6 +312,30 @@ type WorkerAgentMessage struct {
 func (*WorkerAgentMessage) kind() string      { return "WorkerAgentMessage" }
 func (e *WorkerAgentMessage) Time() time.Time { return e.Timestamp }
 
+// WorkerBreadcrumb surfaces a coarse, delta-only snapshot of the files the
+// worker has changed since the previous breadcrumb (PRD #13). It is the
+// agent-agnostic observability fallback for eventless dialects (agy): while a
+// one-shot CLI runs with no native event stream, limen polls `git status
+// --porcelain` in the worktree and emits the changed-file delta. Event-rich
+// dialects (pi/claude/opencode) keep their native streams and do not emit
+// breadcrumbs. Breadcrumbs are ephemeral bus events only — never persisted to
+// the canonical SQLite (determinism boundary §2).
+type WorkerBreadcrumb struct {
+	TaskID    string
+	Files     []BreadcrumbFile
+	Timestamp time.Time
+}
+
+func (*WorkerBreadcrumb) kind() string      { return "WorkerBreadcrumb" }
+func (e *WorkerBreadcrumb) Time() time.Time { return e.Timestamp }
+
+// BreadcrumbFile is one entry of a delta-only worktree-status snapshot. Status
+// is the two-character `git status --porcelain` XY code (e.g. " M", "??").
+type BreadcrumbFile struct {
+	Path   string
+	Status string
+}
+
 // WorkerFinished signals the worker completing its production pass.
 type WorkerFinished struct {
 	TaskID    string

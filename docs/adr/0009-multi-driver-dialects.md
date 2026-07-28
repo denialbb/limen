@@ -232,3 +232,44 @@ An empirical TDD spike (`issues/spike-agy-mcp-empirical.md`) is running to
 confirm the model-gated-pull inference (does `agy --print` actually invoke a
 limen-provided MCP tool mid-run, and how reliably?); its verdict is appended
 to `docs/spikes/agy-mcp-integration.md`.
+
+## Addendum (2026-07-28): git-poll breadcrumbs landed (PRD #13)
+
+The prior addendum rejected MCP for agy status/progress and named **git-poll
+(PRD #13)** as the answer; the empirical spike then confirmed model-gated pull
+(0/5 unprompted breadcrumbs). Git-poll breadcrumbs are now **built**
+(`issues/git-poll-breadcrumbs.md`), so the "git-poll breadcrumbs" non-goal
+listed in *Consequences* is **superseded** — it is a shipped capability. "MCP
+server" remains a non-goal, and §1's revisit trigger is untouched (agy still
+has shell; retrieval is still push-via-prompt).
+
+What shipped, and the properties that keep it inside the ADR's seam:
+
+- **It lives behind the dialect seam, not in the orchestrator.** The poller is
+  in `internal/remote/breadcrumb.go` and is started by the generic
+  `agentWorker` driver. `internal/orchestrator/` diff: zero bytes — the same
+  proof the dialect seam claimed in §4.
+- **Gated on eventlessness, not on vendor.** A new `dialect.emitBreadcrumbs`
+  field is true only for `agyDialect()`. pi/claude/opencode keep the zero value
+  and emit zero breadcrumbs, so their native streams are never doubled. Any
+  future eventless one-shot CLI opts in by flipping one field — the
+  agent-agnostic property that motivated choosing git-poll over MCP.
+- **Ephemeral by principle.** `bus.WorkerBreadcrumb` is a bus event only: it
+  renders in the Worker tab, is deliberately absent from the Timeline, and is
+  never written to the canonical SQLite (`determinism_boundary.md` §2). The
+  validator never consumes it and it cannot influence a state transition.
+- **Bounded and non-fatal.** One short-lived `git status --porcelain
+  --untracked-files=normal` per ~1.5s tick, gitignore-aware, delta-only (an
+  unchanged snapshot emits nothing), bound to the run's context so cancellation
+  kills it. Reader errors are swallowed; the poller can never fail
+  `ProduceSolution`. Observability yields to the run, never the reverse.
+- **Injected seam for determinism.** The poller takes a
+  `func(ctx) (map[string]string, error)` reader; unit tests script it, and a
+  gated real-worktree test (`LIMEN_E2E_REAL_AGENTS=1 go test
+  ./internal/remote/ -run RealGitWorktree`) covers the real git subprocess,
+  asserting untracked/modified files surface and gitignored ones do not.
+
+Consequence for the observability arc: the `WorkerStarted → (black box) →
+WorkerFinished` gap of the one-shot family is closed for every eventless
+dialect, without a new transport, a new process, or any dependence on model
+goodwill.
