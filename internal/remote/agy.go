@@ -31,9 +31,15 @@ func agyCommandArgs(o *options) []string {
 // agyDialect describes agy's `--print` behavior for the generic agentWorker
 // driver. agy is the thinnest one-shot-family dialect: the prompt is `--print`'s
 // value, output is plain text with no event stream, and the driver scans to EOF.
-// Only WorkerStarted/WorkerFinished surface (git-poll breadcrumbs are a future
-// slice). agy's edit tool works, so no constraint block. The blocking
-// ready-for-review bash call keeps the process alive across verdict rounds.
+// agy's edit tool works, so no constraint block. The blocking ready-for-review
+// bash call keeps the process alive across verdict rounds.
+//
+// Being eventless, agy is the one dialect that opts into git-poll breadcrumbs
+// (emitBreadcrumbs, PRD #13): the driver polls `git status --porcelain` in the
+// worktree while agy runs and publishes the changed-file delta, so the run is no
+// longer a black box between WorkerStarted and WorkerFinished. MCP was measured
+// and rejected for this need — it is a model-gated pull channel
+// (docs/spikes/agy-mcp-integration.md, ADR 0009 addenda).
 func agyDialect() dialect {
 	return dialect{
 		name:            "agy",

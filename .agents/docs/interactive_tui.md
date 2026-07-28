@@ -139,6 +139,7 @@ Every event carries a `TaskID` and a `Timestamp` so the TUI can route and order 
 | `WorkerStarted{taskID, worktreePath, baseCommit, retry, ts}` | worker | Worker |
 | `WorkerToolCall{taskID, tool, args, ts}` | worker | Worker |
 | `WorkerFileEdit{taskID, path, op, diffHunk, ts}` | worker (via Python NDJSON) | Worker |
+| `WorkerBreadcrumb{taskID, files, ts}` | worker driver (git-poll, eventless dialects only) | Worker |
 | `WorkerFinished{taskID, ts}` | worker | Worker |
 | `ValidatorExamining{taskID, criteria, ts}` | validator | Validator |
 | `ValidatorCriterionResult{taskID, criterion, passed, detail, ts}` | validator | Validator |
@@ -148,6 +149,16 @@ Every event carries a `TaskID` and a `Timestamp` so the TUI can route and order 
 | `OrchestratorError{taskID, error, ts}` | orchestrator | Timeline |
 
 NOTE: The `RouterDecision` event type is named `RouterDecisionEvent` in `internal/bus` to avoid a type-collision with the mirrored `RouterDecision` string type. Its `kind()` string remains `"RouterDecision"`.
+
+### Breadcrumbs
+
+`WorkerBreadcrumb` is the observability fallback for **eventless** dialects (PRD #13). Dialects with no native event stream — today only `agy` — surface nothing between `WorkerStarted` and `WorkerFinished`, so the worker driver polls `git status --porcelain --untracked-files=normal` in the worktree (~1.5s) and publishes the **delta** of changed files as `WorkerBreadcrumb{files: [{path, status}]}`, where `status` is the two-character porcelain XY code. The Worker tab renders it as one compact line (`Activity: N file(s) changed — …`).
+
+Three properties define it:
+
+- **Gated.** The poller starts only for dialects with `emitBreadcrumbs` set (`internal/remote`). Event-rich dialects (pi/claude/opencode) keep their native `WorkerToolCall`/`WorkerFileEdit`/`WorkerAgentMessage` streams and emit zero breadcrumbs, so there is no double-reporting.
+- **Delta-only.** A poll whose porcelain output matches the previous one emits nothing; gitignored paths never appear.
+- **Ephemeral.** Breadcrumbs are bus events only. They are **not** rendered in the Timeline and are **never** written to the canonical SQLite — they are generation exhaust under `determinism_boundary.md` §2, and the validator never consumes them.
 
 ## TUI Layout
 
