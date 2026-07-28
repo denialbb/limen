@@ -93,9 +93,6 @@ func showFileAtHEAD(ctx context.Context, repoPath, filePath string) ([]byte, err
 // isBinary checks the first binaryCheckLen bytes of data for a null byte,
 // which is a strong signal the file is binary.
 func isBinary(data []byte) bool {
-	n := len(data)
-	if n > binaryCheckLen {
-		n = binaryCheckLen
-	}
+	n := min(len(data), binaryCheckLen)
 	return bytes.IndexByte(data[:n], 0) >= 0
 }
