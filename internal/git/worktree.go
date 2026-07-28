@@ -10,7 +10,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
+
+// worktreeCleanupTimeout bounds the cleanup subprocesses. Cleanup gets its own
+// context because it is usually triggered BY a cancellation: reusing the
+// caller's cancelled context would kill every command before it removed
+// anything, which is the failure mode this whole path exists to prevent.
+const worktreeCleanupTimeout = 30 * time.Second
 
 // Worktree represents an isolated Git worktree environment.
 type Worktree struct {
@@ -120,6 +127,20 @@ func (m *worktreeManagerImpl) ProvisionWorktree(ctx context.Context, baseCommit,
 	cmd.Dir = m.repoPath
 
 	if out, err := cmd.CombinedOutput(); err != nil {
+		// A cancelled context kills `git worktree add` partway through, and git
+		// holds a lock on the worktree for the whole of its initialization. The
+		// half-built entry it leaves behind is locked, so neither remove nor
+		// prune will touch it, and it keeps its branch name reserved — a retry
+		// of the same task then fails with "already used by worktree". Nothing
+		// else cleans this up, so do it here before returning.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			if cleanupErr := m.purgeWorktree(absPath); cleanupErr != nil {
+				// The cancellation is the caller's answer; a cleanup failure is
+				// secondary but must not vanish.
+				log.Printf("cleanup after cancelled worktree provision at %s: %v", absPath, cleanupErr)
+			}
+			return nil, fmt.Errorf("git worktree add cancelled: %w", ctxErr)
+		}
 		return nil, fmt.Errorf("git worktree add failed: %w, output: %s", err, string(out))
 	}
 
@@ -128,6 +149,87 @@ func (m *worktreeManagerImpl) ProvisionWorktree(ctx context.Context, baseCommit,
 		Branch:     branchName,
 		BaseCommit: baseCommit,
 	}, nil
+}
+
+// purgeWorktree removes a worktree from both the filesystem and git's
+// administrative area, and verifies the repository is actually clean
+// afterwards.
+//
+// The escalation exists because a worktree can be in one of three states: a
+// clean checkout (a plain remove suffices), a dirty one (needs --force), or a
+// locked half-initialized one left by an interrupted `git worktree add`, which
+// refuses both until the lock is dropped.
+//
+// The verification exists because git's exit codes do not report this: `git
+// worktree prune` exits 0 whether it pruned an entry or skipped a locked one.
+// Trusting that status is what let a dangling worktree accumulate silently.
+func (m *worktreeManagerImpl) purgeWorktree(path string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), worktreeCleanupTimeout)
+	defer cancel()
+
+	// Drop the initialization lock first: while it stands, every removal below
+	// is a no-op. Worktrees that were never locked fail this harmlessly.
+	m.gitBestEffort(ctx, "worktree", "unlock", path)
+	m.gitBestEffort(ctx, "worktree", "remove", "--force", path)
+
+	var removeErr error
+	if err := os.RemoveAll(path); err != nil {
+		removeErr = fmt.Errorf("remove worktree directory %s: %w", path, err)
+	}
+
+	// Prune whatever administrative entry git left pointing at a directory that
+	// no longer exists.
+	m.gitBestEffort(ctx, "worktree", "prune", "--expire", "now")
+
+	return errors.Join(removeErr, m.verifyWorktreeGone(ctx, path))
+}
+
+// gitBestEffort runs a git command in the repository and discards its result.
+// Every caller is one step of an escalating cleanup, and each step may
+// legitimately fail: unlocking a worktree that was never locked, or removing
+// one git has already forgotten.
+func (m *worktreeManagerImpl) gitBestEffort(ctx context.Context, args ...string) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = m.repoPath
+	_ = cmd.Run()
+}
+
+// verifyWorktreeGone reports an error if the directory survived cleanup or if
+// git still has the worktree registered. This is the check that makes a failed
+// cleanup loud instead of silent.
+func (m *worktreeManagerImpl) verifyWorktreeGone(ctx context.Context, path string) error {
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("worktree directory %s still exists after cleanup", path)
+	}
+
+	cmd := exec.CommandContext(ctx, "git", "worktree", "list", "--porcelain")
+	cmd.Dir = m.repoPath
+	out, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("verify worktree removal: %w", err)
+	}
+	want := canonicalPath(path)
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
+		listed, ok := strings.CutPrefix(line, "worktree ")
+		if !ok {
+			continue
+		}
+		if canonicalPath(strings.TrimSpace(listed)) == want {
+			return fmt.Errorf("git still lists worktree %s after cleanup", path)
+		}
+	}
+	return nil
+}
+
+// canonicalPath resolves symlinks so a path from git and a path from the caller
+// compare equal. EvalSymlinks fails on a path that no longer exists — the
+// expected case after a successful cleanup — so it falls back to a lexical
+// clean, which is consistent for both sides of the comparison.
+func canonicalPath(p string) string {
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		return filepath.Clean(resolved)
+	}
+	return filepath.Clean(p)
 }
 
 // getWorktreeDiff returns the worker's uncommitted changes relative to HEAD.
@@ -376,23 +478,30 @@ func (m *worktreeManagerImpl) CommitWorktree(ctx context.Context, taskID string,
 	return nil
 }
 
-// DestroyWorktree deletes the ephemeral worktree directory.
+// DestroyWorktree deletes the ephemeral worktree directory and removes git's
+// record of it.
+//
+// Removal is attempted politely first and escalated only if that fails, so the
+// ordinary case stays a single subprocess. The method returns an error when the
+// worktree is still on disk or still registered once every escalation has run:
+// a cleanup failure that reports success leaves the worktree's branch name
+// reserved, and the next provision of the same task fails with "already used by
+// worktree" — far from the code that actually failed.
 func (m *worktreeManagerImpl) DestroyWorktree(ctx context.Context, wt *Worktree) error {
+	// --force is the ordinary path, not an escalation: a worker's worktree is
+	// dirty by definition, and a plain remove refuses a dirty worktree. Unlike
+	// prune, remove reports honestly — a zero exit means the worktree and its
+	// administrative entry are both gone — so this needs no verification.
 	cmd := exec.CommandContext(ctx, "git", "worktree", "remove", "--force", wt.Path)
 	cmd.Dir = m.repoPath
-	if err := cmd.Run(); err != nil {
-		// NOTE: log the original error before falling back to manual cleanup + prune
-		if removeErr := os.RemoveAll(wt.Path); removeErr != nil {
-			log.Printf("failed to remove worktree path manually: %v", removeErr)
-		}
-		cmdPrune := exec.CommandContext(ctx, "git", "worktree", "prune", "--expire", "now")
-		cmdPrune.Dir = m.repoPath
-		if errPrune := cmdPrune.Run(); errPrune != nil {
-			return errors.Join(
-				fmt.Errorf("destroy worktree: %w", err),
-				fmt.Errorf("prune: %w", errPrune),
-			)
-		}
+	if err := cmd.Run(); err == nil {
+		return nil
+	}
+
+	// Anything remove refuses: a locked half-initialized entry, a directory
+	// already deleted out from under git, a cancelled context.
+	if err := m.purgeWorktree(wt.Path); err != nil {
+		return fmt.Errorf("destroy worktree %s: %w", wt.Path, err)
 	}
 	return nil
 }

@@ -364,11 +364,10 @@ func TestStressWorktree_CancelledProvisionCleanup(t *testing.T) {
 // TestStressWorktree_CancelledProvisionLeavesNoGitState is the invariant limen
 // actually wants: a cancelled ProvisionWorktree must leave the repo restorable
 // to a single worktree, with no dangling administrative entry and no orphaned
-// branch ref. It fails today — see the KNOWN DEFECT note above — so it is
-// skipped rather than deleted, and is the regression test for the fix.
+// branch ref. It is the regression test for the locked-worktree defect that the
+// stress campaign found — ProvisionWorktree now purges the half-initialized
+// entry it was killed in the middle of building.
 func TestStressWorktree_CancelledProvisionLeavesNoGitState(t *testing.T) {
-	t.Skip("KNOWN DEFECT: DestroyWorktree cannot remove a locked, half-initialized worktree left by a cancelled `git worktree add`, yet returns nil; unskip when worktree.go handles it")
-
 	assertNoGoroutineLeak(t)
 
 	const attempts = 8
