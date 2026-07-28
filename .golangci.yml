@@ -1,0 +1,83 @@
+# golangci-lint configuration.
+#
+# Schema: golangci-lint v1 (pinned to v1.64.2 — see GOLANGCI_LINT_VERSION in the
+# Makefile). golangci-lint v2 changed the config format; running v2 against this
+# file requires `golangci-lint migrate` first.
+#
+# Deliberately minimal: only linters expected to be green on the current tree.
+# Lint is NOT part of the CI gate in .github/workflows/test.yml — it is a local
+# convenience (`make lint`) until the findings are known to be clean on a
+# runner. Tighten thresholds here rather than editing source to satisfy a
+# linter.
+
+run:
+  timeout: 5m
+  # Test files are linted too — the property and stress suites are a large part
+  # of the tree and benefit from staticcheck. Noisier linters are excluded for
+  # tests under issues.exclude-rules below.
+  tests: true
+  skip-dirs:
+    - scripts
+    - docs
+    - issues
+    - .agents
+
+linters:
+  disable-all: true
+  enable:
+    # What `go vet ./...` already covers; kept so `make lint` is a superset.
+    - govet
+    # Formatting, mirroring the gofmt gate.
+    - gofmt
+    # The high-value correctness linter.
+    - staticcheck
+    # Security patterns.
+    - gosec
+    # Duplicate code, with a high threshold to tolerate table-driven tests.
+    - dupl
+    # Cyclomatic complexity, starting loose.
+    - gocyclo
+  # depguard stays disabled: the layering charter is a separate issue, and an
+  # unconfigured depguard denies every import by default.
+
+linters-settings:
+  govet:
+    enable-all: false
+  gocyclo:
+    # Start at 20; tighten once the tree is known green.
+    min-complexity: 20
+  dupl:
+    # High on purpose: test-heavy trees trip low thresholds constantly.
+    threshold: 100
+
+issues:
+  # Do not silently apply golangci-lint's built-in exclusion list; every
+  # exclusion this repo relies on should be visible in this file.
+  exclude-use-default: false
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+  exclude-rules:
+    # Tests: duplication and complexity are expected (table-driven cases,
+    # long property harnesses), and gosec's rules target production surface.
+    - path: _test\.go
+      linters:
+        - dupl
+        - gocyclo
+        - gosec
+
+    # Deterministic test input uses math/rand by design — testing/quick's
+    # quick.Config.Rand requires a *math/rand.Rand, and reproducibility is the
+    # point. G404 (weak random) does not apply.
+    - path: _test\.go
+      text: "G404"
+      linters:
+        - gosec
+
+    # The repo shells out to git with constructed argument slices; G204 flags
+    # every such call site. Argument construction is reviewed at those call
+    # sites rather than suppressed inline.
+    - path: internal/git/
+      text: "G204"
+      linters:
+        - gosec

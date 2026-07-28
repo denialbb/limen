@@ -500,7 +500,9 @@ func TestStressBus_RecorderEmitterConcurrentRecordAndRead(t *testing.T) {
 	var write, read sync.WaitGroup
 
 	for w := range writers {
-		write.Go(func() {
+		write.Add(1)
+		go func(w int) {
+			defer write.Done()
 			for i := range perW {
 				if i%2 == 0 {
 					rec.Publish(&WorkerFinished{TaskID: "rec", Timestamp: time.Now()})
@@ -508,11 +510,13 @@ func TestStressBus_RecorderEmitterConcurrentRecordAndRead(t *testing.T) {
 				}
 				rec.Publish(&ContextBuilt{TaskID: "rec", SnapshotSize: w*perW + i, Timestamp: time.Now()})
 			}
-		})
+		}(w)
 	}
 
 	for range readers {
-		read.Go(func() {
+		read.Add(1)
+		go func() {
+			defer read.Done()
 			prev := 0
 			for {
 				select {
@@ -533,7 +537,7 @@ func TestStressBus_RecorderEmitterConcurrentRecordAndRead(t *testing.T) {
 				}
 				_ = rec.EventsByKind("WorkerFinished")
 			}
-		})
+		}()
 	}
 
 	waitWithin(t, 15*time.Second, "recorder contention", func() {

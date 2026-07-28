@@ -1,0 +1,50 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# The job only reads the repo, builds, and runs the test gate; nothing writes back.
+permissions:
+  contents: read
+
+# A new push to the same branch supersedes the run in flight; no queue pileup.
+concurrency:
+  group: test-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # No git operations after checkout need the token.
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.25'
+
+      # Each gate is its own step so a failure is obvious in the CI UI. Every
+      # step delegates to scripts/run-gates.sh, which is also what developers
+      # run locally (`make check`) — one definition of the gate, not two.
+      #
+      # The script is invoked through `bash` so the run does not depend on the
+      # executable bit surviving checkout.
+      - name: Build
+        run: bash scripts/run-gates.sh build
+
+      - name: Vet
+        run: bash scripts/run-gates.sh vet
+
+      # Fails fast on formatting, before the (much slower) race suite.
+      - name: Gofmt
+        run: bash scripts/run-gates.sh gofmt
+
+      - name: Test (short, race) with coverage profile
+        run: bash scripts/run-gates.sh test
+
+      - name: Coverage floor
+        run: bash scripts/run-gates.sh coverage
