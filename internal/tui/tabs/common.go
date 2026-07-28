@@ -83,7 +83,7 @@ func floatToText(f float64) string {
 // e.Tool is the tool name; e.Args is a JSON object of arguments.
 // Output examples: "bash: go test ./...", "read: main.go", "edit: main.go"
 func formatToolCall(tool, argsJSON string) string {
-	var args map[string]interface{}
+	var args map[string]any
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return tool + ": " + argsJSON
 	}

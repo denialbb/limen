@@ -36,7 +36,7 @@ func piDialect() dialect {
 		baseArgs:      piCommandArgs,
 		promptViaArgv: false,
 		encodeStdin: func(taskID, promptText string) []byte {
-			b, _ := json.Marshal(map[string]interface{}{
+			b, _ := json.Marshal(map[string]any{
 				"id":      taskID,
 				"type":    "prompt",
 				"message": promptText,
@@ -81,7 +81,7 @@ type piDecodeResult struct {
 // events it should produce. It is a pure function over the raw line, task ID,
 // and timestamp, keeping Pi's dialect decoding separate from process I/O.
 func decodePiEvent(line, taskID string, now time.Time) piDecodeResult {
-	var msg map[string]interface{}
+	var msg map[string]any
 	if err := json.Unmarshal([]byte(line), &msg); err != nil {
 		return piDecodeResult{}
 	}
@@ -116,14 +116,14 @@ func decodePiEvent(line, taskID string, now time.Time) piDecodeResult {
 
 	case "turn_end":
 		// Extract agent thinking and text from the completed assistant turn.
-		turnMsg, _ := msg["message"].(map[string]interface{})
+		turnMsg, _ := msg["message"].(map[string]any)
 		if role, _ := turnMsg["role"].(string); role != "assistant" {
 			return piDecodeResult{}
 		}
-		content, _ := turnMsg["content"].([]interface{})
+		content, _ := turnMsg["content"].([]any)
 		var events []bus.Event
 		for _, raw := range content {
-			part, ok := raw.(map[string]interface{})
+			part, ok := raw.(map[string]any)
 			if !ok {
 				continue
 			}

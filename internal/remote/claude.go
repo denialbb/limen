@@ -38,11 +38,11 @@ func claudeDialect() dialect {
 		baseArgs:      claudeCommandArgs,
 		promptViaArgv: false,
 		encodeStdin: func(taskID, promptText string) []byte {
-			b, _ := json.Marshal(map[string]interface{}{
+			b, _ := json.Marshal(map[string]any{
 				"type": "user",
-				"message": map[string]interface{}{
+				"message": map[string]any{
 					"role": "user",
-					"content": []map[string]interface{}{
+					"content": []map[string]any{
 						{"type": "text", "text": promptText},
 					},
 				},
@@ -73,7 +73,7 @@ func NewClaudeWorker(opts ...Option) orchestrator.Worker {
 //   - result -> end of run (analogue of pi's agent_end).
 //   - system (init/hook_*), user (tool_result), rate_limit_event -> ignored.
 func decodeClaudeEvent(line, taskID string, now time.Time) decodeResult {
-	var msg map[string]interface{}
+	var msg map[string]any
 	if err := json.Unmarshal([]byte(line), &msg); err != nil {
 		return decodeResult{}
 	}
@@ -83,11 +83,11 @@ func decodeClaudeEvent(line, taskID string, now time.Time) decodeResult {
 		return decodeResult{end: true}
 
 	case "assistant":
-		inner, _ := msg["message"].(map[string]interface{})
-		content, _ := inner["content"].([]interface{})
+		inner, _ := msg["message"].(map[string]any)
+		content, _ := inner["content"].([]any)
 		var events []bus.Event
 		for _, raw := range content {
-			part, ok := raw.(map[string]interface{})
+			part, ok := raw.(map[string]any)
 			if !ok {
 				continue
 			}

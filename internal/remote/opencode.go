@@ -58,12 +58,12 @@ func NewOpencodeWorker(opts ...Option) orchestrator.Worker {
 //
 // opencode never reports end (one-shot family), so end is always false.
 func decodeOpencodeEvent(line, taskID string, now time.Time) decodeResult {
-	var msg map[string]interface{}
+	var msg map[string]any
 	if err := json.Unmarshal([]byte(line), &msg); err != nil {
 		return decodeResult{}
 	}
 
-	part, _ := msg["part"].(map[string]interface{})
+	part, _ := msg["part"].(map[string]any)
 	if part == nil {
 		return decodeResult{}
 	}
@@ -72,7 +72,7 @@ func decodeOpencodeEvent(line, taskID string, now time.Time) decodeResult {
 	case "tool_use":
 		toolName, _ := part["tool"].(string)
 		var argsStr string
-		if st, ok := part["state"].(map[string]interface{}); ok {
+		if st, ok := part["state"].(map[string]any); ok {
 			if input, ok := st["input"]; ok {
 				b, _ := json.Marshal(input)
 				argsStr = string(b)
