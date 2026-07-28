@@ -16,6 +16,12 @@ import (
 // the cost bounded; the delta filter keeps the bus quiet between real changes.
 const breadcrumbInterval = 1500 * time.Millisecond
 
+// breadcrumbStopGrace bounds how long the driver waits for the poll goroutine
+// to exit after cancelling it. The wait exists so no breadcrumb can land after
+// WorkerFinished; the bound exists so a wedged reader can never hold up the
+// worker's completion. Observability yields to the run, never the reverse.
+const breadcrumbStopGrace = 2 * time.Second
+
 // breadcrumbReader is the injectable seam between the poller and git. Tests
 // supply a scripted sequence; the real driver supplies gitStatusReader(dir).
 // This mirrors the dialect seam, where decode is a pure function over a line:

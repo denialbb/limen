@@ -36,12 +36,13 @@ func agyCommandArgs(o *options) []string {
 // ready-for-review bash call keeps the process alive across verdict rounds.
 func agyDialect() dialect {
 	return dialect{
-		name:          "agy",
-		baseArgs:      agyCommandArgs,
-		promptViaArgv: true,
-		encodeStdin:   nil,
-		decode:        decodeAgyEvent,
-		constraints:   "",
+		name:            "agy",
+		baseArgs:        agyCommandArgs,
+		promptViaArgv:   true,
+		encodeStdin:     nil,
+		decode:          decodeAgyEvent,
+		constraints:     "",
+		emitBreadcrumbs: true,
 	}
 }
 
