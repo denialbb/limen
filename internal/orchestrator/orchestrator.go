@@ -58,10 +58,13 @@ type Worker interface {
 	ProduceSolution(ctx context.Context, task *state.Task, wt *git.Worktree, feedback string, em Emitter) error
 }
 
+// ValidationVerdict represents the typed outcome of a validator evaluation.
+type ValidationVerdict = state.Verdict
+
 // Validator evaluates the correctness of the candidate solution.
 type Validator interface {
-	// Evaluate returns a boolean indicating if the solution passed, and feedback if not.
-	Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree, em Emitter) (bool, string, error)
+	// Evaluate returns a typed ValidationVerdict carrying passes, fatal, and feedback.
+	Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree, em Emitter) (ValidationVerdict, error)
 }
 
 // GitClient handles physical layer operations like validating the repository, committing,
@@ -297,58 +300,91 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 
 		o.recordToolCall(task.ID, "worker.ProduceSolution", "", "")
 
+		workerCtx, cancelWorker := context.WithCancel(ctx)
+
 		workerErrCh := make(chan error, 1)
-		go func() {
-			workerErrCh <- o.worker.ProduceSolution(ctx, task, wt, feedback, em)
-		}()
+		go func(t *state.Task) {
+			workerErrCh <- o.worker.ProduceSolution(workerCtx, t, wt, feedback, em)
+		}(task)
 
 		var wErr error
 	workerLoop:
 		for {
 			select {
 			case <-ctx.Done():
+				cancelWorker()
+				<-workerErrCh
 				return ctx.Err()
 			case err := <-workerErrCh:
 				wErr = err
+				cancelWorker()
 				break workerLoop
 			case <-time.After(200 * time.Millisecond):
 				cbID, _, found, err := o.signaler.GetPendingCallback(task.ID)
 				if err == nil && found {
 					outcome, err := o.validateCandidate(ctx, task, wt, em)
 					if err != nil {
+						cancelWorker()
+						<-workerErrCh
 						return err
 					}
 
-					verdict := state.Verdict{Passes: outcome.passes, Feedback: outcome.feedback}
+					verdict := state.Verdict{Passes: outcome.passes, Fatal: outcome.fatal, Feedback: outcome.feedback}
 					_ = o.signaler.WriteCallbackVerdict(cbID, string(verdict.Marshal()))
 
 					if outcome.passes {
 						if err := o.transitionAndEmit(task.ID, state.StateApproved, em); err != nil {
+							cancelWorker()
+							<-workerErrCh
 							return err
 						}
+					} else if outcome.fatal {
+						cancelWorker()
+						select {
+						case <-workerErrCh:
+						case <-ctx.Done():
+							return ctx.Err()
+						}
+						if err := o.finalizeAndEmit(task.ID, state.StateFailedEscalated, "", em); err != nil {
+							return err
+						}
+						return ErrValidationFailed
 					} else {
-						task, err = o.store.GetTask(task.ID)
+						latestTask, err := o.store.GetTask(task.ID)
 						if err != nil {
+							cancelWorker()
+							<-workerErrCh
 							return err
 						}
-						if task.RetryCount >= task.MaxRetries {
+						if latestTask.RetryCount >= latestTask.MaxRetries {
+							cancelWorker()
+							select {
+							case <-workerErrCh:
+							case <-ctx.Done():
+								return ctx.Err()
+							}
+							if err := o.transitionAndEmit(task.ID, state.StateRevisionRequested, em); err != nil {
+								return err
+							}
 							if err := o.finalizeAndEmit(task.ID, state.StateFailedEscalated, "", em); err != nil {
 								return err
 							}
-							return errors.New("validation failed and max retries reached")
+							return ErrValidationFailed
 						}
 
 						if err := o.transitionAndEmit(task.ID, state.StateRevisionRequested, em); err != nil {
+							cancelWorker()
+							<-workerErrCh
 							return err
 						}
 						if err := o.store.IncrementRetry(task.ID); err != nil {
-							return err
-						}
-						task, err = o.store.GetTask(task.ID)
-						if err != nil {
+							cancelWorker()
+							<-workerErrCh
 							return err
 						}
 						if err := o.transitionAndEmit(task.ID, state.StateWorkerRunning, em); err != nil {
+							cancelWorker()
+							<-workerErrCh
 							return err
 						}
 					}
@@ -404,6 +440,7 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 			return err
 		}
 		passes := outcome.passes
+		fatal := outcome.fatal
 		validationFeedback := outcome.feedback
 
 		if passes {
@@ -438,12 +475,22 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 			return nil
 		}
 
+		if fatal {
+			if err := o.finalizeAndEmit(task.ID, state.StateFailedEscalated, "", em); err != nil {
+				return err
+			}
+			return ErrValidationFailed
+		}
+
 		// Validation failed -- check retry budget.
 		task, err = o.store.GetTask(task.ID)
 		if err != nil {
 			return err
 		}
 		if task.RetryCount >= task.MaxRetries {
+			if err := o.transitionAndEmit(task.ID, state.StateRevisionRequested, em); err != nil {
+				return err
+			}
 			if err := o.finalizeAndEmit(task.ID, state.StateFailedEscalated, "", em); err != nil {
 				return err
 			}
@@ -470,6 +517,7 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 // callback and synchronous dispatchers can drive their pass/fail branches.
 type validationOutcome struct {
 	passes   bool
+	fatal    bool
 	feedback string
 }
 
@@ -494,12 +542,19 @@ func (o *OrchestratorImpl) validateCandidate(ctx context.Context, task *state.Ta
 	}
 
 	o.recordToolCall(task.ID, "validator.Evaluate", "", "")
-	passes, feedback, err := o.validator.Evaluate(ctx, task, tempWt, em)
+	verdict, err := o.validator.Evaluate(ctx, task, tempWt, em)
 
 	_ = o.git.DestroyWorktree(context.WithoutCancel(ctx), tempWt)
 	if err != nil {
 		return validationOutcome{}, err
 	}
+	if verdict.Passes && verdict.Fatal {
+		return validationOutcome{}, errors.New("invalid validator verdict: passes=true cannot be fatal")
+	}
+
+	passes := verdict.Passes
+	fatal := verdict.Fatal
+	feedback := verdict.Feedback
 
 	if passes {
 		hasConflicts, err := o.git.CheckForConflicts(ctx, wt)
@@ -508,6 +563,7 @@ func (o *OrchestratorImpl) validateCandidate(ctx context.Context, task *state.Ta
 		}
 		if hasConflicts {
 			passes = false
+			fatal = false
 			regions, extractErr := o.git.ExtractConflictRegions(ctx, wt)
 			if extractErr != nil {
 				em.Publish(&bus.ConflictDetected{
@@ -526,9 +582,9 @@ func (o *OrchestratorImpl) validateCandidate(ctx context.Context, task *state.Ta
 		}
 	}
 
-	if err := o.store.RecordValidationDecision(task.ID, passes, feedback); err != nil {
+	if err := o.store.RecordValidationDecision(task.ID, passes, fatal, feedback); err != nil {
 		return validationOutcome{}, err
 	}
 
-	return validationOutcome{passes: passes, feedback: feedback}, nil
+	return validationOutcome{passes: passes, fatal: fatal, feedback: feedback}, nil
 }

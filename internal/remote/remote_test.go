@@ -774,16 +774,19 @@ func TestValidator_StreamingSubprocess(t *testing.T) {
 	v := remote.NewValidator([]string{helperPath}, mockGitClient)
 
 	var recorder recordEmitter
-	passes, feedback, err := v.Evaluate(ctx, &state.Task{ID: "task-1"}, &git.Worktree{Path: tmpDir}, &recorder)
+	verdict, err := v.Evaluate(ctx, &state.Task{ID: "task-1"}, &git.Worktree{Path: tmpDir}, &recorder)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if passes {
+	if verdict.Passes {
 		t.Error("expected passes to be false")
 	}
-	if feedback != "Solution has bug" {
-		t.Errorf("expected feedback 'Solution has bug', got %q", feedback)
+	if verdict.Fatal {
+		t.Error("expected fatal to be false")
+	}
+	if verdict.Feedback != "Solution has bug" {
+		t.Errorf("expected feedback 'Solution has bug', got %q", verdict.Feedback)
 	}
 
 	// Verify events were emitted

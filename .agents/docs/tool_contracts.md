@@ -17,13 +17,14 @@ These tools are exposed to the L2 Worker (e.g., via OpenCode) to interact with i
 
 ---
 
-## 2. Validator Tools (MCP)
+## 2. Validator Tools & Wire Verdicts
 
-These tools are exposed to the L3 Validator (e.g., via Antigravity CLI) to enforce correctness.
+These contracts are exposed to the L3 Validator (e.g., via Antigravity CLI, Claude, OpenCode, or Shell) to enforce correctness. At the wire protocol level, agent validators report their outcome via the `LIMEN_VERDICT` stdout sentinel containing a JSON payload with `passes` (bool), `fatal` (bool), and `feedback` (string).
 
-- **`approve(task_id)`**: Signals absolute correctness. Triggers merge and cleanup.
-- **`request_revision(task_id, issues)`**: Signals that flaws exist. Returns structured `issues` to the Worker and initiates a retry loop.
-- **`reject(task_id, reason)`**: Fatal signal. Indicates the implementation is fundamentally flawed or unsalvageable, immediately escalating to the User and bypassing remaining retries.
+- **`approve(task_id)` (`passes=true, fatal=false`)**: Signals absolute correctness. Triggers worktree commit and merge.
+- **`request_revision(task_id, issues)` (`passes=false, fatal=false`)**: Signals retryable flaws (ordinary test/build failures). Returns feedback to the Worker and initiates a retry loop bounded by `MaxRetries`.
+- **`reject(task_id, reason)` (`passes=false, fatal=true`)**: Fatal rejection. Indicates non-retryable policy or invariant violations, or an implementation judged fundamentally flawed/unsalvageable. Escalates directly to `FAILED_ESCALATED` and bypasses remaining retries without consuming a retry count.
+- **Invalid Verdict**: `passes=true` combined with `fatal=true` is contradictory and rejected as a transport/system error. Missing `passes` or `fatal` fields in the sentinel JSON are likewise rejected as malformed.
 - **`expand_context(task_id, reason)`**: Signals that the Validator lacks sufficient codebase context to definitively prove or disprove correctness.
 
 ---

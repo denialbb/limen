@@ -145,10 +145,11 @@ func renderValidatorPrompt(task *state.Task) string {
 			"read-only reviewer.\n\n"+
 			"When you are done, end your FINAL message with EXACTLY ONE line in this\n"+
 			"format, and nothing after it:\n"+
-			"%s {\"passes\":true,\"feedback\":\"<concise reason>\"}\n\n"+
-			"Set passes to true only if the change is correct and the tests pass;\n"+
-			"otherwise set passes to false and give actionable feedback the worker can\n"+
-			"use to revise.",
+			"%s {\"passes\":true,\"fatal\":false,\"feedback\":\"<concise reason>\"}\n\n"+
+			"Set passes to true and fatal to false only if the change is correct and\n"+
+			"the tests pass; otherwise set passes to false and indicate whether the issue\n"+
+			"is fatal (true for fundamentally flawed/non-retryable policy or invariant\n"+
+			"violations, false for ordinary code or test failures), with actionable feedback.",
 		task.ID, task.Prompt, verdictSentinelPrefix,
 	)
 }
@@ -158,7 +159,7 @@ func renderValidatorPrompt(task *state.Task) string {
 // LIMEN_VERDICT sentinel. A missing sentinel is a transport error (not a
 // correctness verdict) so it does not burn the retry budget; no verdict event is
 // emitted in that case.
-func (v *agentValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree, em orchestrator.Emitter) (bool, string, error) {
+func (v *agentValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree, em orchestrator.Emitter) (orchestrator.ValidationVerdict, error) {
 	prompt := renderValidatorPrompt(task)
 	args := append(append([]string(nil), v.cmdArgs...), prompt)
 
@@ -204,24 +205,25 @@ func (v *agentValidator) Evaluate(ctx context.Context, task *state.Task, wt *git
 	verdict, parseErr := parseVerdictSentinel(out.String())
 	if parseErr != nil {
 		if ctx.Err() != nil {
-			return false, "", ctx.Err()
+			return orchestrator.ValidationVerdict{}, ctx.Err()
 		}
 		if runErr != nil {
-			return false, "", fmt.Errorf("%s validator: run failed and no verdict sentinel: %w", v.dialect.name, runErr)
+			return orchestrator.ValidationVerdict{}, fmt.Errorf("%s validator: run failed and no verdict sentinel: %w", v.dialect.name, runErr)
 		}
-		return false, "", fmt.Errorf("%s validator: %w", v.dialect.name, parseErr)
+		return orchestrator.ValidationVerdict{}, fmt.Errorf("%s validator: %w", v.dialect.name, parseErr)
 	}
 
 	if em != nil {
 		em.Publish(&bus.ValidatorVerdict{
 			TaskID:    task.ID,
 			Passes:    verdict.Passes,
+			Fatal:     verdict.Fatal,
 			Feedback:  verdict.Feedback,
 			Timestamp: time.Now(),
 		})
 	}
 
-	return verdict.Passes, verdict.Feedback, nil
+	return verdict, nil
 }
 
 // parseVerdictSentinel scans validator output for LIMEN_VERDICT lines and

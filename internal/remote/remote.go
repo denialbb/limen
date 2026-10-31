@@ -511,10 +511,10 @@ func NewValidator(args []string, git orchestrator.GitClient, opts ...Option) orc
 }
 
 // Evaluate implements orchestrator.Validator.
-func (v *ndjsonValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree, em orchestrator.Emitter) (bool, string, error) {
+func (v *ndjsonValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree, em orchestrator.Emitter) (orchestrator.ValidationVerdict, error) {
 	diff, err := v.git.GetWorktreeDiff(ctx, wt)
 	if err != nil {
-		return false, "", fmt.Errorf("remote: capture worktree diff: %w", err)
+		return orchestrator.ValidationVerdict{}, fmt.Errorf("remote: capture worktree diff: %w", err)
 	}
 
 	req := requestEnvelope{
@@ -536,24 +536,24 @@ func (v *ndjsonValidator) Evaluate(ctx context.Context, task *state.Task, wt *gi
 	}
 	sp, err := newSubprocess(ctx, cmd, v.opts.shutdownTimeout, logFile)
 	if err != nil {
-		return false, "", err
+		return orchestrator.ValidationVerdict{}, err
 	}
 	defer sp.shutdown()
 
 	if err := sp.enc.Encode(requestToEnvelope(req)); err != nil {
-		return false, "", fmt.Errorf("remote: write validator request: %w", err)
+		return orchestrator.ValidationVerdict{}, fmt.Errorf("remote: write validator request: %w", err)
 	}
 
 	for {
 		env, err := sp.dec.Decode()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				return false, "", fmt.Errorf("remote: validator subprocess exited before verdict event")
+				return orchestrator.ValidationVerdict{}, fmt.Errorf("remote: validator subprocess exited before verdict event")
 			}
 			if ctx.Err() != nil {
-				return false, "", ctx.Err()
+				return orchestrator.ValidationVerdict{}, ctx.Err()
 			}
-			return false, "", fmt.Errorf("remote: validator decode: %w", err)
+			return orchestrator.ValidationVerdict{}, fmt.Errorf("remote: validator decode: %w", err)
 		}
 
 		if env.Kind != ndjson.KindEvent || env.Event == nil {
@@ -563,7 +563,7 @@ func (v *ndjsonValidator) Evaluate(ctx context.Context, task *state.Task, wt *gi
 		switch env.Event.Type {
 		case "error":
 			payload, _ := decodePayload(env.Event.Payload)
-			return false, "", fmt.Errorf("remote: validator error: %v", payload["error"])
+			return orchestrator.ValidationVerdict{}, fmt.Errorf("remote: validator error: %v", payload["error"])
 
 		case "validator.examining":
 			if em != nil {
@@ -603,17 +603,23 @@ func (v *ndjsonValidator) Evaluate(ctx context.Context, task *state.Task, wt *gi
 		case "validator.verdict":
 			payload, _ := decodePayload(env.Event.Payload)
 			passes, _ := payload["passes"].(bool)
+			fatal, _ := payload["fatal"].(bool)
 			feedback, _ := payload["feedback"].(string)
+
+			if passes && fatal {
+				return orchestrator.ValidationVerdict{}, fmt.Errorf("remote: invalid validator verdict: passes=true cannot be fatal")
+			}
 
 			if em != nil {
 				em.Publish(&bus.ValidatorVerdict{
 					TaskID:    task.ID,
 					Passes:    passes,
+					Fatal:     fatal,
 					Feedback:  feedback,
 					Timestamp: time.Now(),
 				})
 			}
-			return passes, feedback, nil
+			return orchestrator.ValidationVerdict{Passes: passes, Fatal: fatal, Feedback: feedback}, nil
 		}
 	}
 }

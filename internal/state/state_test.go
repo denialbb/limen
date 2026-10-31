@@ -1,8 +1,11 @@
 package state_test
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/denialbb/limen/internal/state"
@@ -304,7 +307,7 @@ func TestRecordValidationDecision(t *testing.T) {
 	store := newTestStore(t)
 	_, _ = store.CreateTask("task-123", 3, "")
 
-	if err := store.RecordValidationDecision("task-123", false, "needs work"); err != nil {
+	if err := store.RecordValidationDecision("task-123", false, true, "fatal flaw"); err != nil {
 		t.Fatalf("expected no error recording validation decision, got: %v", err)
 	}
 
@@ -314,13 +317,25 @@ func TestRecordValidationDecision(t *testing.T) {
 	}
 
 	if task.ValidationDecision == "" {
-		t.Error("expected ValidationDecision to be persisted")
+		t.Fatal("expected ValidationDecision to be persisted")
+	}
+
+	decisions, err := store.GetValidationDecisions("task-123")
+	if err != nil {
+		t.Fatalf("expected no error getting decisions: %v", err)
+	}
+	if len(decisions) != 1 {
+		t.Fatalf("expected 1 decision, got %d", len(decisions))
+	}
+	if decisions[0].Pass || !decisions[0].Fatal || decisions[0].Feedback != "fatal flaw" {
+		t.Errorf("expected pass=false, fatal=true, feedback='fatal flaw', got pass=%v fatal=%v feedback=%q",
+			decisions[0].Pass, decisions[0].Fatal, decisions[0].Feedback)
 	}
 }
 
 func TestRecordValidationDecisionTaskNotFound(t *testing.T) {
 	store := newTestStore(t)
-	err := store.RecordValidationDecision("task-404", true, "")
+	err := store.RecordValidationDecision("task-404", true, false, "")
 	if !errors.Is(err, state.ErrTaskNotFound) {
 		t.Errorf("expected ErrTaskNotFound, got: %v", err)
 	}
@@ -381,10 +396,10 @@ func TestValidationDecisionsAppended(t *testing.T) {
 	store := newTestStore(t)
 	_, _ = store.CreateTask("task-123", 3, "")
 
-	if err := store.RecordValidationDecision("task-123", false, "needs work"); err != nil {
+	if err := store.RecordValidationDecision("task-123", false, false, "needs work"); err != nil {
 		t.Fatalf("expected no error recording first decision, got: %v", err)
 	}
-	if err := store.RecordValidationDecision("task-123", true, "looks good"); err != nil {
+	if err := store.RecordValidationDecision("task-123", true, false, "looks good"); err != nil {
 		t.Fatalf("expected no error recording second decision, got: %v", err)
 	}
 
@@ -397,12 +412,14 @@ func TestValidationDecisionsAppended(t *testing.T) {
 		t.Fatalf("expected 2 validation decisions, got: %d", len(decisions))
 	}
 
-	if decisions[0].Pass || decisions[0].Feedback != "needs work" {
-		t.Errorf("expected first decision pass=false feedback='needs work', got pass=%v feedback=%q", decisions[0].Pass, decisions[0].Feedback)
+	if decisions[0].Pass || decisions[0].Fatal || decisions[0].Feedback != "needs work" {
+		t.Errorf("expected first decision pass=false fatal=false feedback='needs work', got pass=%v fatal=%v feedback=%q",
+			decisions[0].Pass, decisions[0].Fatal, decisions[0].Feedback)
 	}
 
-	if !decisions[1].Pass || decisions[1].Feedback != "looks good" {
-		t.Errorf("expected second decision pass=true feedback='looks good', got pass=%v feedback=%q", decisions[1].Pass, decisions[1].Feedback)
+	if !decisions[1].Pass || decisions[1].Fatal || decisions[1].Feedback != "looks good" {
+		t.Errorf("expected second decision pass=true fatal=false feedback='looks good', got pass=%v fatal=%v feedback=%q",
+			decisions[1].Pass, decisions[1].Fatal, decisions[1].Feedback)
 	}
 }
 
@@ -605,18 +622,18 @@ func TestRecordContextSnapshot_Transactional(t *testing.T) {
 
 func TestVerdictRoundTrip(t *testing.T) {
 	cases := []state.Verdict{
-		{Passes: true, Feedback: "LGTM"},
-		{Passes: false, Feedback: `needs work: "quote" and \backslash`},
-		{Passes: false, Feedback: ""},
+		{Passes: true, Fatal: false, Feedback: "LGTM"},
+		{Passes: false, Fatal: false, Feedback: `needs work: "quote" and \backslash`},
+		{Passes: false, Fatal: true, Feedback: "fundamental invariant violated"},
+		{Passes: false, Fatal: false, Feedback: ""},
 	}
 
 	for _, want := range cases {
 		data := want.Marshal()
 
-		// Marshal must stay byte-compatible with the legacy fmt.Sprintf wire format.
-		legacy := fmt.Sprintf(`{"passes":%t,"feedback":%q}`, want.Passes, want.Feedback)
-		if string(data) != legacy {
-			t.Fatalf("Marshal produced %q, want legacy %q", data, legacy)
+		expectedWire := fmt.Sprintf(`{"passes":%t,"fatal":%t,"feedback":%q}`, want.Passes, want.Fatal, want.Feedback)
+		if string(data) != expectedWire {
+			t.Fatalf("Marshal produced %q, want wire %q", data, expectedWire)
 		}
 
 		got, err := state.UnmarshalVerdict(data)
@@ -631,16 +648,133 @@ func TestVerdictRoundTrip(t *testing.T) {
 
 func TestVerdictProducersMatch(t *testing.T) {
 	passes := true
+	fatal := false
 	feedback := "identical shape"
 
-	orchestrator := state.Verdict{Passes: passes, Feedback: feedback}.Marshal()
-	cli := state.Verdict{Passes: passes, Feedback: feedback}.Marshal()
+	orchestrator := state.Verdict{Passes: passes, Fatal: fatal, Feedback: feedback}.Marshal()
+	cli := state.Verdict{Passes: passes, Fatal: fatal, Feedback: feedback}.Marshal()
 
 	if string(orchestrator) != string(cli) {
 		t.Fatalf("producer bytes differ: %q vs %q", orchestrator, cli)
 	}
-	legacy := fmt.Sprintf(`{"passes":%t,"feedback":%q}`, passes, feedback)
-	if string(orchestrator) != legacy {
-		t.Fatalf("producer bytes %q differ from legacy %q", orchestrator, legacy)
+	expectedWire := fmt.Sprintf(`{"passes":%t,"fatal":%t,"feedback":%q}`, passes, fatal, feedback)
+	if string(orchestrator) != expectedWire {
+		t.Fatalf("producer bytes %q differ from wire %q", orchestrator, expectedWire)
+	}
+}
+
+func TestUnmarshalVerdict_RejectsMalformed(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   string
+		wantErr string
+	}{
+		{
+			name:    "passes with fatal",
+			input:   `{"passes":true,"fatal":true,"feedback":"nonsense"}`,
+			wantErr: "invalid verdict: passes=true cannot be fatal",
+		},
+		{
+			name:    "missing fatal",
+			input:   `{"passes":true,"feedback":"ok"}`,
+			wantErr: "missing fatal field",
+		},
+		{
+			name:    "missing passes",
+			input:   `{"fatal":false,"feedback":"ok"}`,
+			wantErr: "missing passes field",
+		},
+		{
+			name:    "not json",
+			input:   `not-json`,
+			wantErr: "invalid character",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := state.UnmarshalVerdict([]byte(tc.input))
+			if err == nil {
+				t.Fatalf("expected error for %s, got nil", tc.input)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error to contain %q, got: %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestSQLiteMigration_FatalColumn(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "legacy.db")
+
+	// Create a pre-migration database without the fatal column.
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	legacySchema := `
+	CREATE TABLE tasks (
+		id TEXT PRIMARY KEY,
+		current_state TEXT NOT NULL,
+		retry_count INTEGER NOT NULL DEFAULT 0,
+		max_retries INTEGER NOT NULL,
+		validation_decision TEXT,
+		final_output TEXT,
+		context_snapshot TEXT,
+		prompt TEXT NOT NULL DEFAULT ''
+	);
+	CREATE TABLE validation_decisions (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		task_id TEXT NOT NULL,
+		pass INTEGER NOT NULL,
+		feedback TEXT NOT NULL,
+		recorded_at INTEGER NOT NULL,
+		FOREIGN KEY (task_id) REFERENCES tasks(id)
+	);
+	INSERT INTO tasks (id, current_state, retry_count, max_retries, prompt) VALUES ('legacy-task', 'CREATED', 0, 3, 'test');
+	INSERT INTO validation_decisions (task_id, pass, feedback, recorded_at) VALUES ('legacy-task', 0, 'old feedback', 12345);
+	`
+	if _, err := db.Exec(legacySchema); err != nil {
+		db.Close()
+		t.Fatalf("exec legacy schema: %v", err)
+	}
+	db.Close()
+
+	// Open via NewSQLiteStore, which runs migrations.
+	store, err := state.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("open store with migration: %v", err)
+	}
+	defer store.Close()
+
+	// Verify legacy record has Fatal = false.
+	decisions, err := store.GetValidationDecisions("legacy-task")
+	if err != nil {
+		t.Fatalf("get validation decisions: %v", err)
+	}
+	if len(decisions) != 1 {
+		t.Fatalf("expected 1 legacy decision, got %d", len(decisions))
+	}
+	if decisions[0].Pass || decisions[0].Fatal || decisions[0].Feedback != "old feedback" {
+		t.Errorf("legacy decision mismatch: pass=%v fatal=%v feedback=%q",
+			decisions[0].Pass, decisions[0].Fatal, decisions[0].Feedback)
+	}
+
+	// Insert a new decision with fatal = true.
+	if err := store.RecordValidationDecision("legacy-task", false, true, "fatal failure"); err != nil {
+		t.Fatalf("record new decision: %v", err)
+	}
+
+	decisions, err = store.GetValidationDecisions("legacy-task")
+	if err != nil {
+		t.Fatalf("get validation decisions after insert: %v", err)
+	}
+	if len(decisions) != 2 {
+		t.Fatalf("expected 2 decisions, got %d", len(decisions))
+	}
+	if decisions[1].Pass || !decisions[1].Fatal || decisions[1].Feedback != "fatal failure" {
+		t.Errorf("new decision mismatch: pass=%v fatal=%v feedback=%q",
+			decisions[1].Pass, decisions[1].Fatal, decisions[1].Feedback)
 	}
 }

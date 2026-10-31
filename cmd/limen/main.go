@@ -112,7 +112,7 @@ type cliValidator struct {
 	logDir string
 }
 
-func (v *cliValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree, em orchestrator.Emitter) (bool, string, error) {
+func (v *cliValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree, em orchestrator.Emitter) (orchestrator.ValidationVerdict, error) {
 	log.Printf("Validator evaluating solution for task %s", task.ID)
 
 	passes := true
@@ -172,10 +172,15 @@ func (v *cliValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.W
 	em.Publish(&bus.ValidatorVerdict{
 		TaskID:    task.ID,
 		Passes:    passes,
+		Fatal:     false,
 		Feedback:  feedback,
 		Timestamp: time.Now(),
 	})
-	return passes, feedback, nil
+	return orchestrator.ValidationVerdict{
+		Passes:   passes,
+		Fatal:    false,
+		Feedback: feedback,
+	}, nil
 }
 
 func main() {
@@ -630,6 +635,7 @@ func runSubmitVerdictCmd() {
 	taskID := flags.String("task-id", "", "The ID of the task")
 	dbPath := flags.String("db-path", "", "Path to the SQLite database")
 	passes := flags.Bool("passes", false, "Whether the solution passes validation")
+	fatal := flags.Bool("fatal", false, "Whether the rejection is fatal (cannot be true if passes is true)")
 	feedback := flags.String("feedback", "", "Validation feedback")
 
 	if err := flags.Parse(os.Args[2:]); err != nil {
@@ -640,6 +646,11 @@ func runSubmitVerdictCmd() {
 	if *taskID == "" || *feedback == "" {
 		fmt.Fprintf(os.Stderr, "--task-id and --feedback are required\n")
 		flags.Usage()
+		os.Exit(1)
+	}
+
+	if *passes && *fatal {
+		fmt.Fprintf(os.Stderr, "Invalid verdict: --passes=true and --fatal=true are contradictory\n")
 		os.Exit(1)
 	}
 
@@ -659,7 +670,7 @@ func runSubmitVerdictCmd() {
 	}
 	defer store.Close()
 
-	if err := store.RecordValidationDecision(*taskID, *passes, *feedback); err != nil {
+	if err := store.RecordValidationDecision(*taskID, *passes, *fatal, *feedback); err != nil {
 		log.Fatalf("Failed to record validation decision: %v", err)
 	}
 
@@ -669,7 +680,7 @@ func runSubmitVerdictCmd() {
 	}
 
 	if found {
-		verdict := state.Verdict{Passes: *passes, Feedback: *feedback}
+		verdict := state.Verdict{Passes: *passes, Fatal: *fatal, Feedback: *feedback}
 		if err := store.WriteCallbackVerdict(cbID, string(verdict.Marshal())); err != nil {
 			log.Fatalf("Failed to write callback verdict: %v", err)
 		}

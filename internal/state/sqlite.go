@@ -90,6 +90,7 @@ func (s *SQLiteStore) createSchema() error {
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		task_id TEXT NOT NULL,
 		pass INTEGER NOT NULL,
+		fatal INTEGER NOT NULL DEFAULT 0,
 		feedback TEXT NOT NULL,
 		recorded_at INTEGER NOT NULL,
 		FOREIGN KEY (task_id) REFERENCES tasks(id)
@@ -137,6 +138,9 @@ func (s *SQLiteStore) createSchema() error {
 
 	// Migration for prompt column.
 	_, _ = s.db.Exec("ALTER TABLE tasks ADD COLUMN prompt TEXT NOT NULL DEFAULT ''")
+
+	// Migration for fatal column.
+	_, _ = s.db.Exec("ALTER TABLE validation_decisions ADD COLUMN fatal INTEGER NOT NULL DEFAULT 0")
 
 	return nil
 }
@@ -328,6 +332,7 @@ func (s *SQLiteStore) GetToolCalls(id string) ([]ToolCall, error) {
 // validationDecision is the persisted shape of RecordValidationDecision data.
 type validationDecision struct {
 	Pass     bool   `json:"pass"`
+	Fatal    bool   `json:"fatal"`
 	Feedback string `json:"feedback"`
 }
 
@@ -335,7 +340,7 @@ type validationDecision struct {
 // It appends to the validation_decisions history table so that every signal
 // in a retry loop remains reproducible, and also updates the tasks row with
 // the latest decision for convenience.
-func (s *SQLiteStore) RecordValidationDecision(id string, pass bool, feedback string) error {
+func (s *SQLiteStore) RecordValidationDecision(id string, pass bool, fatal bool, feedback string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
@@ -350,14 +355,19 @@ func (s *SQLiteStore) RecordValidationDecision(id string, pass bool, feedback st
 		return fmt.Errorf("check task existence: %w", err)
 	}
 
+	fatalInt := 0
+	if fatal {
+		fatalInt = 1
+	}
+
 	if _, err := tx.Exec(
-		"INSERT INTO validation_decisions (task_id, pass, feedback, recorded_at) VALUES (?, ?, ?, ?)",
-		id, pass, feedback, time.Now().Unix(),
+		"INSERT INTO validation_decisions (task_id, pass, fatal, feedback, recorded_at) VALUES (?, ?, ?, ?, ?)",
+		id, pass, fatalInt, feedback, time.Now().Unix(),
 	); err != nil {
 		return fmt.Errorf("insert validation decision: %w", err)
 	}
 
-	decision := validationDecision{Pass: pass, Feedback: feedback}
+	decision := validationDecision{Pass: pass, Fatal: fatal, Feedback: feedback}
 	data, err := json.Marshal(decision)
 	if err != nil {
 		return fmt.Errorf("marshal validation decision: %w", err)
@@ -563,6 +573,7 @@ type ValidationDecisionRecord struct {
 	ID         int64
 	TaskID     string
 	Pass       bool
+	Fatal      bool
 	Feedback   string
 	RecordedAt int64
 }
@@ -570,7 +581,7 @@ type ValidationDecisionRecord struct {
 // GetValidationDecisions returns the full ordered history of validation decisions for a task.
 func (s *SQLiteStore) GetValidationDecisions(id string) ([]ValidationDecisionRecord, error) {
 	rows, err := s.db.Query(
-		"SELECT id, task_id, pass, feedback, recorded_at FROM validation_decisions WHERE task_id = ? ORDER BY id ASC",
+		"SELECT id, task_id, pass, fatal, feedback, recorded_at FROM validation_decisions WHERE task_id = ? ORDER BY id ASC",
 		id,
 	)
 	if err != nil {
@@ -581,9 +592,11 @@ func (s *SQLiteStore) GetValidationDecisions(id string) ([]ValidationDecisionRec
 	var decisions []ValidationDecisionRecord
 	for rows.Next() {
 		var vd ValidationDecisionRecord
-		if err := rows.Scan(&vd.ID, &vd.TaskID, &vd.Pass, &vd.Feedback, &vd.RecordedAt); err != nil {
+		var fatalInt int
+		if err := rows.Scan(&vd.ID, &vd.TaskID, &vd.Pass, &fatalInt, &vd.Feedback, &vd.RecordedAt); err != nil {
 			return nil, fmt.Errorf("scan validation decision: %w", err)
 		}
+		vd.Fatal = fatalInt != 0
 		decisions = append(decisions, vd)
 	}
 	if err := rows.Err(); err != nil {

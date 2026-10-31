@@ -110,6 +110,12 @@ func registerSteps(s *Suite, get func() *world) {
 		return nil
 	})
 
+	s.Step(`the validator will reject the solution as fatal`, func(args []string) error {
+		get().validator.fatal = true
+		get().validator.verdicts = []bool{false}
+		return nil
+	})
+
 	s.Step(`the task allows (\d+) retries`, func(args []string) error {
 		n, err := atoi(args[0])
 		if err != nil {
@@ -288,6 +294,21 @@ func registerSteps(s *Suite, get func() *world) {
 		}
 		if task.RetryCount < task.MaxRetries {
 			return fmt.Errorf("retry count %d has not reached the max of %d", task.RetryCount, task.MaxRetries)
+		}
+		return nil
+	})
+
+	s.Step(`no retries were consumed`, func(args []string) error {
+		w := get()
+		if err := w.requireRun(); err != nil {
+			return err
+		}
+		task, err := w.store.GetTask(w.taskID)
+		if err != nil {
+			return err
+		}
+		if task.RetryCount != 0 {
+			return fmt.Errorf("expected 0 retries, got %d", task.RetryCount)
 		}
 		return nil
 	})

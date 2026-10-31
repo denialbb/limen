@@ -16,6 +16,7 @@ type vcStore struct {
 	state.Store
 	task            state.Task
 	recordedPass    bool
+	recordedFatal   bool
 	recordedFeedbk  string
 	recordCalled    bool
 	transitions     []state.TaskState
@@ -35,9 +36,10 @@ func (s *vcStore) TransitionState(id string, newState state.TaskState) error {
 
 func (s *vcStore) RecordToolCall(id, call, args, response string) error { return nil }
 
-func (s *vcStore) RecordValidationDecision(id string, pass bool, feedback string) error {
+func (s *vcStore) RecordValidationDecision(id string, pass bool, fatal bool, feedback string) error {
 	s.recordCalled = true
 	s.recordedPass = pass
+	s.recordedFatal = fatal
 	s.recordedFeedbk = feedback
 	return s.recordDecideErr
 }
@@ -45,12 +47,13 @@ func (s *vcStore) RecordValidationDecision(id string, pass bool, feedback string
 // vcValidator returns a fixed verdict.
 type vcValidator struct {
 	passes   bool
+	fatal    bool
 	feedback string
 	err      error
 }
 
-func (v *vcValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree, em Emitter) (bool, string, error) {
-	return v.passes, v.feedback, v.err
+func (v *vcValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree, em Emitter) (ValidationVerdict, error) {
+	return ValidationVerdict{Passes: v.passes, Fatal: v.fatal, Feedback: v.feedback}, v.err
 }
 
 // vcGit is a minimal WorktreeManager. It embeds git.WorktreeManager so unused

@@ -254,6 +254,8 @@ func summarizeEvent(ev bus.Event) string {
 		v := "FAIL"
 		if e.Passes {
 			v = "PASS"
+		} else if e.Fatal {
+			v = "FATAL"
 		}
 		return fmt.Sprintf("verdict: %s — %s", v, strings.TrimSpace(e.Feedback))
 	case *bus.ConflictDetected:

@@ -93,9 +93,23 @@ Feature: Task Lifecycle
     And it reaches REVISION_REQUESTED
     And it returns to WORKER_RUNNING
     And it reaches AWAITING_VALIDATION
+    And it reaches REVISION_REQUESTED
     And it reaches FAILED_ESCALATED
     And the task ends in FAILED_ESCALATED
     And the retry budget is exhausted
     And the worker ran 3 times
+    And the canonical branch did not advance
+    And no final output was recorded
+
+  Scenario: Fatal rejection escalates directly
+    Given the validator will reject the solution as fatal
+    When a task is created
+    Then it reaches WORKER_RUNNING
+    And it reaches AWAITING_VALIDATION
+    And the validator rejected the solution
+    And it reaches FAILED_ESCALATED
+    And the task ends in FAILED_ESCALATED
+    And the worker ran 1 times
+    And no retries were consumed
     And the canonical branch did not advance
     And no final output was recorded

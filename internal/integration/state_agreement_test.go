@@ -499,20 +499,7 @@ func TestStateAgreement_RouterDecisionsMatch(t *testing.T) {
 // the record rather than a silent hole in the coverage guarantee.
 //
 // Keep this map as close to empty as the truth allows.
-var exemptedTransitions = map[transition]string{
-	{From: "REVISION_REQUESTED", To: "FAILED_ESCALATED"}: "" +
-		"Unreachable in production today, so no scenario can walk it. Both retry paths in " +
-		"internal/orchestrator/orchestrator.go (~line 334 and ~line 446) test RetryCount >= MaxRetries " +
-		"while the task is still in AWAITING_VALIDATION and escalate straight from there; " +
-		"REVISION_REQUESTED is entered only when a retry remains, and is followed immediately by " +
-		"WORKER_RUNNING. That behavior matches spec invariant 5 (Fatal Validation Shortcut), but the " +
-		"spec's graph still labels this edge \"Retry count == Max\", and state.IsValidTransition still " +
-		"permits it.\n" +
-		"\t\tTODO: tighten. Per .agents/docs/state_machine.md (State Graph + invariants 3 and 5), decide " +
-		"whether retry exhaustion should escalate from REVISION_REQUESTED (then make the orchestrator " +
-		"walk it and add a scenario) or from AWAITING_VALIDATION (then drop this edge from both the " +
-		"spec graph and state.IsValidTransition). Removing this exemption is the definition of done.",
-}
+var exemptedTransitions = map[transition]string{}
 
 // TestStateAgreement_TransitionsCoveredByScenarios asserts every edge of the
 // state machine is exercised by at least one Gherkin scenario, except those
