@@ -140,9 +140,20 @@ func (s *SQLiteStore) createSchema() error {
 	_, _ = s.db.Exec("ALTER TABLE tasks ADD COLUMN prompt TEXT NOT NULL DEFAULT ''")
 
 	// Migration for fatal column.
-	_, _ = s.db.Exec("ALTER TABLE validation_decisions ADD COLUMN fatal INTEGER NOT NULL DEFAULT 0")
+	if _, err := s.db.Exec("ALTER TABLE validation_decisions ADD COLUMN fatal INTEGER NOT NULL DEFAULT 0"); err != nil {
+		if !isDuplicateColumnError(err) {
+			return fmt.Errorf("migrate fatal column: %w", err)
+		}
+	}
 
 	return nil
+}
+
+func isDuplicateColumnError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "duplicate column name")
 }
 
 // CreateTask initializes a task in the CREATED state.

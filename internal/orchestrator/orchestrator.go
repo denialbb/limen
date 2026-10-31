@@ -330,7 +330,11 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 					}
 
 					verdict := state.Verdict{Passes: outcome.passes, Fatal: outcome.fatal, Feedback: outcome.feedback}
-					_ = o.signaler.WriteCallbackVerdict(cbID, string(verdict.Marshal()))
+					if err := o.signaler.WriteCallbackVerdict(cbID, string(verdict.Marshal())); err != nil {
+						cancelWorker()
+						<-workerErrCh
+						return fmt.Errorf("write callback verdict: %w", err)
+					}
 
 					if outcome.passes {
 						if err := o.transitionAndEmit(task.ID, state.StateApproved, em); err != nil {
@@ -340,11 +344,7 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 						}
 					} else if outcome.fatal {
 						cancelWorker()
-						select {
-						case <-workerErrCh:
-						case <-ctx.Done():
-							return ctx.Err()
-						}
+						<-workerErrCh
 						if err := o.finalizeAndEmit(task.ID, state.StateFailedEscalated, "", em); err != nil {
 							return err
 						}
@@ -358,11 +358,7 @@ func (o *OrchestratorImpl) RunTask(ctx context.Context, taskID string) error {
 						}
 						if latestTask.RetryCount >= latestTask.MaxRetries {
 							cancelWorker()
-							select {
-							case <-workerErrCh:
-							case <-ctx.Done():
-								return ctx.Err()
-							}
+							<-workerErrCh
 							if err := o.transitionAndEmit(task.ID, state.StateRevisionRequested, em); err != nil {
 								return err
 							}

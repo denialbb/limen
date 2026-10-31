@@ -778,3 +778,56 @@ func TestSQLiteMigration_FatalColumn(t *testing.T) {
 			decisions[1].Pass, decisions[1].Fatal, decisions[1].Feedback)
 	}
 }
+
+func TestSQLiteMigration_FatalColumn_ErrorOnRealFailure(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "maxcols.db")
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+
+	// SQLite default maximum column limit is 2000.
+	// Create tasks and validation_decisions with 2000 columns so adding 'fatal' exceeds the limit.
+	var colDefs []string
+	colDefs = append(colDefs, "id INTEGER PRIMARY KEY", "task_id TEXT")
+	for i := 2; i < 2000; i++ {
+		colDefs = append(colDefs, fmt.Sprintf("c%d INTEGER", i))
+	}
+	createTable := fmt.Sprintf("CREATE TABLE validation_decisions (%s);", strings.Join(colDefs, ", "))
+	if _, err := db.Exec(createTable); err != nil {
+		db.Close()
+		t.Fatalf("create max cols table: %v", err)
+	}
+	db.Close()
+
+	// NewSQLiteStore must fail when ALTER TABLE fails with a real SQLite error.
+	store, err := state.NewSQLiteStore(dbPath)
+	if err == nil {
+		store.Close()
+		t.Fatal("expected NewSQLiteStore to fail on migration error, got nil")
+	}
+	if !strings.Contains(err.Error(), "migrate fatal column") {
+		t.Fatalf("expected error to mention 'migrate fatal column', got: %v", err)
+	}
+}
+
+func TestSQLiteMigration_FatalColumn_IdempotentOnExistingColumn(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "existing.db")
+
+	// First initialization.
+	store1, err := state.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("first NewSQLiteStore: %v", err)
+	}
+	store1.Close()
+
+	// Second initialization on existing DB with fatal column already present.
+	store2, err := state.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("second NewSQLiteStore on existing column should succeed, got: %v", err)
+	}
+	defer store2.Close()
+}
