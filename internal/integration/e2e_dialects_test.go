@@ -81,9 +81,9 @@ func TestEndToEnd_ClaudeWorker_AgyValidator(t *testing.T) {
 		"cat >/dev/null &\n" +
 		"DIR=$(pwd)\n" +
 		"printf 'a - b\\n' > \"$DIR/math.txt\"\n" +
-		binaryPath + " ready-for-review --task-id " + taskID + " --db-path " + dbPath + " --summary 'first attempt' >/dev/null 2>&1\n" +
+		"limen" + " ready-for-review --task-id " + taskID + " --db-path " + dbPath + " --summary 'first attempt' >/dev/null 2>&1\n" +
 		"printf 'a + b\\n' > \"$DIR/math.txt\"\n" +
-		binaryPath + " ready-for-review --task-id " + taskID + " --db-path " + dbPath + " --summary 'second attempt' >/dev/null 2>&1\n" +
+		"limen" + " ready-for-review --task-id " + taskID + " --db-path " + dbPath + " --summary 'second attempt' >/dev/null 2>&1\n" +
 		"echo '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"done\"}'\n"
 	if err := os.WriteFile(filepath.Join(fakeBin, "claude"), []byte(claudeScript), 0755); err != nil {
 		t.Fatalf("write fake claude: %v", err)

@@ -166,7 +166,16 @@ type options struct {
 	workerModel string
 	// validatorModel is the dialect-neutral model selector for agent validators.
 	validatorModel string
+	// sandbox rewrites a worker launch into a sandboxed one. Nil means the
+	// worker runs unsandboxed (test doubles only).
+	sandbox SandboxFunc
+	// validatorSandbox rewrites a validator launch into a sandboxed one.
+	validatorSandbox SandboxFunc
 }
+
+// SandboxFunc rewrites cmd so it runs inside a sandbox rooted at worktree.
+// Returning an error aborts the launch: the task must not run unsandboxed.
+type SandboxFunc func(cmd *exec.Cmd, worktree string) error
 
 func defaultOptions() *options {
 	return &options{
@@ -222,6 +231,20 @@ func WithWorkerModel(model string) Option {
 func WithValidatorModel(model string) Option {
 	return func(o *options) {
 		o.validatorModel = model
+	}
+}
+
+// WithSandbox confines the worker subprocess to a sandbox.
+func WithSandbox(fn SandboxFunc) Option {
+	return func(o *options) {
+		o.sandbox = fn
+	}
+}
+
+// WithValidatorSandbox confines the validator subprocess to a sandbox.
+func WithValidatorSandbox(fn SandboxFunc) Option {
+	return func(o *options) {
+		o.validatorSandbox = fn
 	}
 }
 
