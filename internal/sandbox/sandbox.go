@@ -50,12 +50,11 @@ type Provider struct {
 	CredScheme string
 	// SecretMounts are host credential files mounted read-only into the
 	// sandbox for backends that cannot be pointed at a broker (agy).
-	SecretMounts []string
+	SecretMounts []Mount
+	// DummyEnv are placeholder credentials broker-capable CLIs need to start.
+	// The broker replaces them with the host credential.
+	DummyEnv []string
 }
-
-// brokerCapable reports whether the backend can be pointed at the host broker
-// and handed a dummy credential.
-func (p Provider) brokerCapable() bool { return len(p.BaseURLEnv) > 0 }
 
 // Policy is everything the sandbox needs to know about one run.
 type Policy struct {
@@ -77,12 +76,25 @@ type Policy struct {
 	// LimenBinary is mounted read-only as /usr/local/bin/limen so the worker can
 	// call ready-for-review.
 	LimenBinary string
+	// ExtraMounts are additional host paths mounted into the sandbox (generated
+	// CLI configuration for broker-capable backends).
+	ExtraMounts []Mount
+	// ExtraPath are additional directories prepended to the sandbox PATH. They
+	// must also appear in ExtraMounts so the binaries are reachable.
+	ExtraPath []string
 	// LogDir receives the generated broker credential files. Unused.
 	LogDir string
 }
 
+// Mount is one extra bind mount. ReadOnly mounts cannot be written by the task.
+type Mount struct {
+	Source   string
+	Target   string
+	ReadOnly bool
+}
+
 // sandboxLimenPath is where the limen binary appears inside the sandbox.
-const sandboxLimenPath = "/usr/local/bin/limen"
+const sandboxLimenPath = "/opt/limen/limen"
 
 // sandboxBrokerPath and sandboxCallbackPath are the in-sandbox socket paths.
 const (
@@ -144,11 +156,11 @@ func Wrap(cmd *exec.Cmd, p Policy) error {
 	if info, err := os.Stat(p.Worktree); err != nil || !info.IsDir() {
 		return fmt.Errorf("sandbox: worktree %q is not a directory", p.Worktree)
 	}
-	if p.BridgeAddr != "" && !p.Provider.brokerCapable() {
-		return fmt.Errorf("sandbox: provider %q cannot be brokered but egress was requested", p.Provider.Name)
-	}
 	if p.BridgeAddr != "" && p.BrokerSocket == "" {
 		return fmt.Errorf("sandbox: provider %q needs a broker socket", p.Provider.Name)
+	}
+	if p.BridgeAddr != "" && len(p.Provider.Hosts) == 0 {
+		return fmt.Errorf("sandbox: provider %q has no allowlisted hosts; egress would be unbounded", p.Provider.Name)
 	}
 
 	bwrap, err := exec.LookPath(bwrapBinary)
@@ -182,7 +194,15 @@ func bwrapArgs(p Policy) []string {
 		args = append(args, "--ro-bind-try", host, host)
 	}
 	for _, secret := range p.Provider.SecretMounts {
-		args = append(args, "--ro-bind", secret, secret)
+		args = append(args, "--ro-bind", secret.Source, secret.Target)
+	}
+	for _, m := range p.ExtraMounts {
+		args = append(args, "--dir", filepath.Dir(m.Target))
+		if m.ReadOnly {
+			args = append(args, "--ro-bind", m.Source, m.Target)
+		} else {
+			args = append(args, "--bind", m.Source, m.Target)
+		}
 	}
 	if p.BrokerSocket != "" {
 		args = append(args, "--dir", filepath.Dir(sandboxBrokerPath),
@@ -193,7 +213,7 @@ func bwrapArgs(p Policy) []string {
 			"--bind", p.CallbackSocket, sandboxCallbackPath)
 	}
 	if p.LimenBinary != "" {
-		args = append(args, "--ro-bind", p.LimenBinary, sandboxLimenPath)
+		args = append(args, "--dir", "/opt/limen", "--ro-bind", p.LimenBinary, sandboxLimenPath)
 	}
 	return append(args, "--")
 }
@@ -217,7 +237,8 @@ func sandboxCommand(p Policy, argv []string) []string {
 // environment is inherited: an untrusted repository must not be able to read
 // provider credentials, tokens, or paths out of the parent process.
 func sandboxEnv(p Policy) []string {
-	path := "/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin"
+	path := strings.Join(append(append([]string{"/opt/limen"}, p.ExtraPath...),
+		"/usr/local/bin", "/usr/local/sbin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"), ":")
 	env := []string{
 		"PATH=" + path,
 		"HOME=/tmp/home",
@@ -234,21 +255,7 @@ func sandboxEnv(p Policy) []string {
 		for _, name := range p.Provider.BaseURLEnv {
 			env = append(env, name+"=http://"+p.BridgeAddr)
 		}
-		env = append(env, dummyCredentialEnv(p.Provider)...)
+		env = append(env, p.Provider.DummyEnv...)
 	}
 	return env
-}
-
-// dummyCredentialEnv supplies the placeholder credentials broker-capable CLIs
-// need to start. The broker replaces them with the host credential; the sandbox
-// never holds the real one.
-func dummyCredentialEnv(p Provider) []string {
-	switch p.Name {
-	case "claude":
-		return []string{"ANTHROPIC_API_KEY=limen-sandbox-dummy", "ANTHROPIC_AUTH_TOKEN=limen-sandbox-dummy"}
-	case "opencode":
-		return []string{"ANTHROPIC_API_KEY=limen-sandbox-dummy", "OPENCODE_API_KEY=limen-sandbox-dummy"}
-	default:
-		return nil
-	}
 }

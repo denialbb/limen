@@ -130,17 +130,17 @@ except OSError as e:
 	}
 }
 
-func TestWrapRejectsBrokerWithoutCapableProvider(t *testing.T) {
+func TestWrapRejectsEgressWithoutAllowlist(t *testing.T) {
 	p := testPolicy(t)
 	p.BridgeAddr = "127.0.0.1:9000"
 	p.BrokerSocket = filepath.Join(t.TempDir(), "broker.sock")
-	p.Provider = Provider{Name: "agy", Hosts: []string{"example.test"}}
+	p.Provider = Provider{Name: "agy"}
 	cmd := exec.Command("/bin/true")
 	err := Wrap(cmd, p)
 	if err == nil {
-		t.Fatal("expected an error for a provider that cannot be brokered")
+		t.Fatal("expected an error for unbounded egress")
 	}
-	if !strings.Contains(err.Error(), "cannot be brokered") {
+	if !strings.Contains(err.Error(), "allowlisted hosts") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
