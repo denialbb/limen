@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import time
+from typing import TextIO
 
 # Default transcript path used by entrypoints when no argument is given.
 # Relative to the repo root (the Go side always launches from there).
@@ -42,8 +43,8 @@ class Runtime:
         self,
         transcript: dict,
         *,
-        stdin: object = None,
-        stdout: object = None,
+        stdin: TextIO | None = None,
+        stdout: TextIO | None = None,
     ):
         self._transcript = transcript
         self._stdin = stdin if stdin is not None else sys.stdin
@@ -264,6 +265,7 @@ class Runtime:
                     "task_id": task_id,
                     "payload": {
                         "passes": result.get("passes"),
+                        "fatal": result.get("fatal", False),
                         "feedback": result.get("feedback"),
                     },
                     "timestamp": _now_ms(),

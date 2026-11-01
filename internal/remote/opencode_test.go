@@ -70,11 +70,11 @@ func TestOpencodeWorkerInjectedCommand(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "fake-opencode.sh")
 	fixture := `#!/bin/sh
-echo '{"type":"step_start","part":{"type":"step-start"}}'
-echo '{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"echo hi"},"output":"hi\n"}}}'
-echo '{"type":"step_finish","part":{"reason":"tool-calls"}}'
-echo '{"type":"text","part":{"type":"text","text":"done"}}'
-echo '{"type":"step_finish","part":{"reason":"stop"}}'
+printf '%s\n' '{"type":"step_start","part":{"type":"step-start"}}'
+printf '%s\n' '{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"echo hi"},"output":"hi\n"}}}'
+printf '%s\n' '{"type":"step_finish","part":{"reason":"tool-calls"}}'
+printf '%s\n' '{"type":"text","part":{"type":"text","text":"done"}}'
+printf '%s\n' '{"type":"step_finish","part":{"reason":"stop"}}'
 `
 	if err := os.WriteFile(script, []byte(fixture), 0755); err != nil {
 		t.Fatalf("write fixture: %v", err)

@@ -32,7 +32,8 @@ CAPTURE="${TUI_CAPTURE_CMD:-$ROOT/scripts/tui-capture.sh}"
 
 deadline=$(( $(date +%s) + TIMEOUT ))
 while true; do
-    if "$CAPTURE" "$SESSION" 2>/dev/null | grep -Eq "$PATTERN"; then
+    capture_out="$("$CAPTURE" "$SESSION" 2>/dev/null || true)"
+    if grep -Eq "$PATTERN" <<< "$capture_out"; then
         exit 0
     fi
     if (( $(date +%s) >= deadline )); then

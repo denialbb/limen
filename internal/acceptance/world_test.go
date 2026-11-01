@@ -157,16 +157,21 @@ func (w *recordingWorker) ProduceSolution(ctx context.Context, task *state.Task,
 // scriptedValidator returns a pre-set verdict sequence; the last entry repeats.
 type scriptedValidator struct {
 	verdicts []bool
+	fatal    bool
 	calls    int
 }
 
-func (v *scriptedValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree, em orchestrator.Emitter) (bool, string, error) {
+func (v *scriptedValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree, em orchestrator.Emitter) (orchestrator.ValidationVerdict, error) {
 	passes := v.verdicts[min(v.calls, len(v.verdicts)-1)]
 	v.calls++
 	if passes {
-		return true, "", nil
+		return orchestrator.ValidationVerdict{Passes: true, Fatal: false, Feedback: ""}, nil
 	}
-	return false, fmt.Sprintf("revision %d: tests do not pass", v.calls), nil
+	return orchestrator.ValidationVerdict{
+		Passes:   false,
+		Fatal:    v.fatal,
+		Feedback: fmt.Sprintf("revision %d: tests do not pass", v.calls),
+	}, nil
 }
 
 // acceptanceGit adapts the real WorktreeManager and reports the repository as

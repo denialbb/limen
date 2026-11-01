@@ -81,6 +81,8 @@ func formatVerdict(e *bus.ValidatorVerdict) string {
 	verdict := "FAIL"
 	if e.Passes {
 		verdict = "PASS"
+	} else if e.Fatal {
+		verdict = "FATAL"
 	}
 	body := "Verdict: " + verdict
 	if e.Feedback != "" {

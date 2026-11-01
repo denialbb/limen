@@ -371,6 +371,7 @@ func (e *ValidatorCriterionResult) Time() time.Time { return e.Timestamp }
 type ValidatorVerdict struct {
 	TaskID    string
 	Passes    bool
+	Fatal     bool
 	Feedback  string
 	Timestamp time.Time
 }

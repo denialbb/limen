@@ -94,9 +94,9 @@ func TestEndToEnd_ClaudeWorker_AgyValidator(t *testing.T) {
 	// answer.
 	agyScript := "#!/bin/bash\n" +
 		"if grep -q 'a + b' math.txt 2>/dev/null; then\n" +
-		"  echo 'LIMEN_VERDICT: {\"passes\":true,\"feedback\":\"math.txt contains a + b\"}'\n" +
+		"  echo 'LIMEN_VERDICT: {\"passes\":true,\"fatal\":false,\"feedback\":\"math.txt contains a + b\"}'\n" +
 		"else\n" +
-		"  echo 'LIMEN_VERDICT: {\"passes\":false,\"feedback\":\"math.txt must contain a + b\"}'\n" +
+		"  echo 'LIMEN_VERDICT: {\"passes\":false,\"fatal\":false,\"feedback\":\"math.txt must contain a + b\"}'\n" +
 		"fi\n"
 	if err := os.WriteFile(filepath.Join(fakeBin, "agy"), []byte(agyScript), 0755); err != nil {
 		t.Fatalf("write fake agy: %v", err)

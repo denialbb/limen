@@ -79,10 +79,11 @@ func (w *dummyWorker) ProduceSolution(ctx context.Context, task *state.Task, wt 
 
 type dummyValidator struct {
 	passes bool
+	fatal  bool
 }
 
-func (v *dummyValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree, em orchestrator.Emitter) (bool, string, error) {
-	return v.passes, "feedback", nil
+func (v *dummyValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree, em orchestrator.Emitter) (orchestrator.ValidationVerdict, error) {
+	return orchestrator.ValidationVerdict{Passes: v.passes, Fatal: v.fatal, Feedback: "feedback"}, nil
 }
 
 type dummyGitClient struct {
@@ -557,13 +558,13 @@ type debrisValidator struct {
 	passes bool
 }
 
-func (v *debrisValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree, em orchestrator.Emitter) (bool, string, error) {
+func (v *debrisValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree, em orchestrator.Emitter) (orchestrator.ValidationVerdict, error) {
 	// Write test debris to the validator's worktree.
 	err := os.WriteFile(filepath.Join(wt.Path, "debris.txt"), []byte("this is test debris"), 0644)
 	if err != nil {
-		return false, "failed to write debris", err
+		return orchestrator.ValidationVerdict{Passes: false, Feedback: "failed to write debris"}, err
 	}
-	return v.passes, "debris created", nil
+	return orchestrator.ValidationVerdict{Passes: v.passes, Fatal: false, Feedback: "debris created"}, nil
 }
 
 func TestValidatorThrowawayWorktree(t *testing.T) {

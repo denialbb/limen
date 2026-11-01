@@ -53,21 +53,45 @@ type ToolCall struct {
 // the Go Core writes it, and the agent reads it on stdout.
 type Verdict struct {
 	Passes   bool   `json:"passes"`
+	Fatal    bool   `json:"fatal"`
 	Feedback string `json:"feedback"`
 }
 
 // Marshal renders the verdict as the wire JSON the agent consumes.
 func (v Verdict) Marshal() []byte {
-	return []byte(fmt.Sprintf(`{"passes":%t,"feedback":%q}`, v.Passes, v.Feedback))
+	return []byte(fmt.Sprintf(`{"passes":%t,"fatal":%t,"feedback":%q}`, v.Passes, v.Fatal, v.Feedback))
 }
 
 // UnmarshalVerdict parses a wire verdict string back into a Verdict.
+// It strictly requires both passes and fatal booleans to be present.
+// If passes=true with fatal=true, it returns an error.
 func UnmarshalVerdict(data []byte) (Verdict, error) {
-	var v Verdict
-	if err := json.Unmarshal(data, &v); err != nil {
+	var raw struct {
+		Passes   *bool   `json:"passes"`
+		Fatal    *bool   `json:"fatal"`
+		Feedback *string `json:"feedback"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return Verdict{}, err
 	}
-	return v, nil
+	if raw.Passes == nil {
+		return Verdict{}, errors.New("malformed verdict: missing passes field")
+	}
+	if raw.Fatal == nil {
+		return Verdict{}, errors.New("malformed verdict: missing fatal field")
+	}
+	if *raw.Passes && *raw.Fatal {
+		return Verdict{}, errors.New("invalid verdict: passes=true cannot be fatal")
+	}
+	fb := ""
+	if raw.Feedback != nil {
+		fb = *raw.Feedback
+	}
+	return Verdict{
+		Passes:   *raw.Passes,
+		Fatal:    *raw.Fatal,
+		Feedback: fb,
+	}, nil
 }
 
 // Store defines the contract for persisting and retrieving task state.
@@ -97,7 +121,7 @@ type Store interface {
 	GetToolCalls(id string) ([]ToolCall, error)
 
 	// RecordValidationDecision persists the validation decision and feedback.
-	RecordValidationDecision(id string, pass bool, feedback string) error
+	RecordValidationDecision(id string, pass bool, fatal bool, feedback string) error
 
 	// RecordFinalOutput persists the final output produced for the task.
 	RecordFinalOutput(id, output string) error

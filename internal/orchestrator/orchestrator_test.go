@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -124,7 +125,7 @@ func (r *recordingMockStore) RecordToolCall(id, call, args, response string) err
 	return nil
 }
 
-func (m *mockStore) RecordValidationDecision(id string, pass bool, feedback string) error {
+func (m *mockStore) RecordValidationDecision(id string, pass bool, fatal bool, feedback string) error {
 	return nil
 }
 
@@ -188,10 +189,11 @@ func (m *mockWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *
 
 type mockValidator struct {
 	passes bool
+	fatal  bool
 }
 
-func (m *mockValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree, em orchestrator.Emitter) (bool, string, error) {
-	return m.passes, "feedback", nil
+func (m *mockValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree, em orchestrator.Emitter) (orchestrator.ValidationVerdict, error) {
+	return orchestrator.ValidationVerdict{Passes: m.passes, Fatal: m.fatal, Feedback: "feedback"}, nil
 }
 
 type mockGit struct {
@@ -601,8 +603,8 @@ var _ orchestrator.Router = (*mockErrorRouter)(nil)
 
 type mockErrorValidator struct{}
 
-func (m *mockErrorValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree, em orchestrator.Emitter) (bool, string, error) {
-	return false, "", errMockValidator
+func (m *mockErrorValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree, em orchestrator.Emitter) (orchestrator.ValidationVerdict, error) {
+	return orchestrator.ValidationVerdict{}, errMockValidator
 }
 
 // Compile-time check that mockErrorValidator implements Validator.
@@ -1066,5 +1068,622 @@ func TestRunTask_RecordsToolCalls(t *testing.T) {
 		if store.calls[i].response != want.response {
 			t.Errorf("call %d: expected response %q, got %q", i, want.response, store.calls[i].response)
 		}
+	}
+}
+
+func TestRunTask_FatalVerdictSynchronous(t *testing.T) {
+	store := &mockStore{tasks: make(map[string]*state.Task)}
+	task, _ := store.CreateTask("task-fatal-sync", 3, "")
+
+	router := &mockRouter{decision: orchestrator.DecisionProceed}
+	worker := &mockWorker{}
+	validator := &mockValidator{passes: false, fatal: true}
+	gitClient := &mockGit{valid: true}
+
+	orch, rec := newRecordingOrchestrator(store, router, worker, validator, gitClient)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	err := orch.RunTask(ctx, task.ID)
+	if !errors.Is(err, orchestrator.ErrValidationFailed) {
+		t.Fatalf("expected ErrValidationFailed, got: %v", err)
+	}
+
+	taskAfter, err := store.GetTask(task.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if taskAfter.CurrentState != state.StateFailedEscalated {
+		t.Fatalf("expected state FAILED_ESCALATED, got: %s", taskAfter.CurrentState)
+	}
+	if taskAfter.RetryCount != 0 {
+		t.Fatalf("fatal rejection must not consume retry, got retry_count=%d", taskAfter.RetryCount)
+	}
+
+	// Verify transitions: AWAITING_VALIDATION -> FAILED_ESCALATED directly, never REVISION_REQUESTED
+	events := rec.EventsByKind("TaskStateChanged")
+	for _, ev := range events {
+		sc := ev.(*bus.TaskStateChanged)
+		if sc.To == state.StateRevisionRequested {
+			t.Fatalf("fatal verdict must not transition through REVISION_REQUESTED")
+		}
+	}
+	lastEvent := events[len(events)-1].(*bus.TaskStateChanged)
+	if lastEvent.From != state.StateAwaitingValidation || lastEvent.To != state.StateFailedEscalated {
+		t.Fatalf("expected last transition AWAITING_VALIDATION -> FAILED_ESCALATED, got %s -> %s",
+			lastEvent.From, lastEvent.To)
+	}
+}
+
+func TestRunTask_RetryExhaustionSynchronous(t *testing.T) {
+	store := &mockStore{tasks: make(map[string]*state.Task)}
+	task, _ := store.CreateTask("task-exhaust-sync", 2, "")
+
+	router := &mockRouter{decision: orchestrator.DecisionProceed}
+	worker := &mockWorker{}
+	validator := &mockValidator{passes: false, fatal: false}
+	gitClient := &mockGit{valid: true}
+
+	orch, rec := newRecordingOrchestrator(store, router, worker, validator, gitClient)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	err := orch.RunTask(ctx, task.ID)
+	if !errors.Is(err, orchestrator.ErrValidationFailed) {
+		t.Fatalf("expected ErrValidationFailed, got: %v", err)
+	}
+
+	taskAfter, err := store.GetTask(task.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if taskAfter.CurrentState != state.StateFailedEscalated {
+		t.Fatalf("expected state FAILED_ESCALATED, got: %s", taskAfter.CurrentState)
+	}
+	// Default 2 retries means 3 worker attempts (retry=0, retry=1, retry=2 at limit).
+	// RetryCount is incremented on the 2 reruns, but NOT on the final failure at limit.
+	if taskAfter.RetryCount != 2 {
+		t.Fatalf("expected RetryCount=2 at exhaustion, got %d", taskAfter.RetryCount)
+	}
+
+	// Verify the final transition order: AWAITING_VALIDATION -> REVISION_REQUESTED -> FAILED_ESCALATED
+	events := rec.EventsByKind("TaskStateChanged")
+	if len(events) < 2 {
+		t.Fatalf("expected multiple transitions, got %d", len(events))
+	}
+	penultimate := events[len(events)-2].(*bus.TaskStateChanged)
+	last := events[len(events)-1].(*bus.TaskStateChanged)
+	if penultimate.From != state.StateAwaitingValidation || penultimate.To != state.StateRevisionRequested {
+		t.Fatalf("expected penultimate transition AWAITING_VALIDATION -> REVISION_REQUESTED, got %s -> %s",
+			penultimate.From, penultimate.To)
+	}
+	if last.From != state.StateRevisionRequested || last.To != state.StateFailedEscalated {
+		t.Fatalf("expected last transition REVISION_REQUESTED -> FAILED_ESCALATED, got %s -> %s",
+			last.From, last.To)
+	}
+}
+
+type mockCallbackWorkerWithHook struct {
+	dbPath       string
+	startedCh    chan struct{}
+	exitedCh     chan struct{}
+	verdictsSeen []state.Verdict
+}
+
+func (m *mockCallbackWorkerWithHook) ProduceSolution(ctx context.Context, task *state.Task, wt *git.Worktree, feedback string, em orchestrator.Emitter) error {
+	close(m.startedCh)
+	defer close(m.exitedCh)
+
+	// Call ready-for-review
+	cmd := exec.CommandContext(ctx, "go", "run", "github.com/denialbb/limen/cmd/limen",
+		"ready-for-review", "--task-id", task.ID, "--summary", "solution attempt", "--db-path", m.dbPath)
+	out, err := cmd.CombinedOutput()
+	v, parseErr := state.UnmarshalVerdict([]byte(strings.TrimSpace(string(out))))
+	if parseErr == nil {
+		m.verdictsSeen = append(m.verdictsSeen, v)
+	}
+	if err != nil {
+		return err
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestRunTask_FatalVerdictCallback_WorkerJoined(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := state.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	task, _ := store.CreateTask("task-fatal-cb", 3, "")
+
+	router := &mockRouter{decision: orchestrator.DecisionProceed}
+	worker := &mockCallbackWorkerWithHook{
+		dbPath:    dbPath,
+		startedCh: make(chan struct{}),
+		exitedCh:  make(chan struct{}),
+	}
+	validator := &mockValidator{passes: false, fatal: true}
+	gitMock := &mockGit{valid: true}
+
+	orch, rec := newRecordingOrchestrator(store, router, worker, validator, gitMock)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	err = orch.RunTask(ctx, task.ID)
+	if !errors.Is(err, orchestrator.ErrValidationFailed) {
+		t.Fatalf("expected ErrValidationFailed, got: %v", err)
+	}
+
+	// Worker must have returned and exited (joined) by the time RunTask returns.
+	select {
+	case <-worker.exitedCh:
+		// Clean join verified
+	default:
+		t.Fatalf("worker did not exit before RunTask returned")
+	}
+
+	// Verify callback received fatal verdict
+	if len(worker.verdictsSeen) != 1 {
+		t.Fatalf("expected worker to see 1 verdict, got %d", len(worker.verdictsSeen))
+	}
+	if !worker.verdictsSeen[0].Fatal || worker.verdictsSeen[0].Passes {
+		t.Fatalf("expected fatal rejection, got %+v", worker.verdictsSeen[0])
+	}
+
+	taskAfter, err := store.GetTask(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if taskAfter.CurrentState != state.StateFailedEscalated {
+		t.Fatalf("expected state FAILED_ESCALATED, got: %s", taskAfter.CurrentState)
+	}
+	if taskAfter.RetryCount != 0 {
+		t.Fatalf("fatal callback rejection must not consume retry, got %d", taskAfter.RetryCount)
+	}
+
+	// Verify transitions: AWAITING_VALIDATION -> FAILED_ESCALATED directly
+	events := rec.EventsByKind("TaskStateChanged")
+	lastEvent := events[len(events)-1].(*bus.TaskStateChanged)
+	if lastEvent.From != state.StateAwaitingValidation || lastEvent.To != state.StateFailedEscalated {
+		t.Fatalf("expected last transition AWAITING_VALIDATION -> FAILED_ESCALATED, got %s -> %s",
+			lastEvent.From, lastEvent.To)
+	}
+}
+
+type mockRetryCallbackWorker struct {
+	dbPath       string
+	exitedCh     chan struct{}
+	verdictsSeen []state.Verdict
+}
+
+func (m *mockRetryCallbackWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *git.Worktree, feedback string, em orchestrator.Emitter) error {
+	defer close(m.exitedCh)
+
+	for {
+		cmd := exec.CommandContext(ctx, "go", "run", "github.com/denialbb/limen/cmd/limen",
+			"ready-for-review", "--task-id", task.ID, "--summary", "solution attempt", "--db-path", m.dbPath)
+		out, err := cmd.CombinedOutput()
+		v, parseErr := state.UnmarshalVerdict([]byte(strings.TrimSpace(string(out))))
+		if parseErr == nil {
+			m.verdictsSeen = append(m.verdictsSeen, v)
+		}
+		if err != nil {
+			return err
+		}
+		if v.Passes {
+			return nil
+		}
+		// If rejected, simulate revising and checking context
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
+func TestRunTask_RetryExhaustionCallback_WorkerJoined(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := state.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	task, _ := store.CreateTask("task-exhaust-cb", 1, "")
+
+	router := &mockRouter{decision: orchestrator.DecisionProceed}
+	worker := &mockRetryCallbackWorker{
+		dbPath:   dbPath,
+		exitedCh: make(chan struct{}),
+	}
+	validator := &mockValidator{passes: false, fatal: false}
+	gitMock := &mockGit{valid: true}
+
+	orch, rec := newRecordingOrchestrator(store, router, worker, validator, gitMock)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	err = orch.RunTask(ctx, task.ID)
+	if !errors.Is(err, orchestrator.ErrValidationFailed) {
+		t.Fatalf("expected ErrValidationFailed, got: %v", err)
+	}
+
+	// Worker must have returned and exited (joined) by the time RunTask returns.
+	select {
+	case <-worker.exitedCh:
+		// Clean join verified
+	default:
+		t.Fatalf("worker did not exit before RunTask returned")
+	}
+
+	// Expected 2 verdicts: first rejection at retry 0, second rejection at retry 1 (limit)
+	if len(worker.verdictsSeen) != 2 {
+		t.Fatalf("expected worker to see 2 verdicts, got %d", len(worker.verdictsSeen))
+	}
+
+	taskAfter, err := store.GetTask(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if taskAfter.CurrentState != state.StateFailedEscalated {
+		t.Fatalf("expected state FAILED_ESCALATED, got: %s", taskAfter.CurrentState)
+	}
+	if taskAfter.RetryCount != 1 {
+		t.Fatalf("expected RetryCount=1 at exhaustion, got %d", taskAfter.RetryCount)
+	}
+
+	// Verify transitions walk AWAITING_VALIDATION -> REVISION_REQUESTED -> FAILED_ESCALATED
+	events := rec.EventsByKind("TaskStateChanged")
+	penultimate := events[len(events)-2].(*bus.TaskStateChanged)
+	last := events[len(events)-1].(*bus.TaskStateChanged)
+	if penultimate.From != state.StateAwaitingValidation || penultimate.To != state.StateRevisionRequested {
+		t.Fatalf("expected penultimate transition AWAITING_VALIDATION -> REVISION_REQUESTED, got %s -> %s",
+			penultimate.From, penultimate.To)
+	}
+	if last.From != state.StateRevisionRequested || last.To != state.StateFailedEscalated {
+		t.Fatalf("expected last transition REVISION_REQUESTED -> FAILED_ESCALATED, got %s -> %s",
+			last.From, last.To)
+	}
+}
+
+func TestRunTask_InvalidVerdict_PassesWithFatal(t *testing.T) {
+	store := &mockStore{tasks: make(map[string]*state.Task)}
+	task, _ := store.CreateTask("task-invalid-verdict", 3, "")
+
+	router := &mockRouter{decision: orchestrator.DecisionProceed}
+	worker := &mockWorker{}
+	validator := &mockValidator{passes: true, fatal: true}
+	gitClient := &mockGit{valid: true}
+
+	orch, _ := newRecordingOrchestrator(store, router, worker, validator, gitClient)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	err := orch.RunTask(ctx, task.ID)
+	if err == nil {
+		t.Fatalf("expected error for invalid verdict passes=true and fatal=true, got nil")
+	}
+	if !strings.Contains(err.Error(), "passes=true cannot be fatal") {
+		t.Fatalf("expected error mentioning invalid verdict, got: %v", err)
+	}
+}
+
+type mockGitWithDestroyHook struct {
+	mockGit
+	onDestroyWorkerWorktree func()
+	workerWorktreePath      string
+}
+
+func (m *mockGitWithDestroyHook) ProvisionWorktree(ctx context.Context, baseCommit, branchName, path string) (*git.Worktree, error) {
+	wt, err := m.mockGit.ProvisionWorktree(ctx, baseCommit, branchName, path)
+	if err != nil {
+		return nil, err
+	}
+	m.workerWorktreePath = wt.Path
+	return wt, nil
+}
+
+func (m *mockGitWithDestroyHook) DestroyWorktree(ctx context.Context, wt *git.Worktree) error {
+	if m.onDestroyWorkerWorktree != nil && wt != nil && wt.Path == m.workerWorktreePath {
+		m.onDestroyWorkerWorktree()
+	}
+	return m.mockGit.DestroyWorktree(ctx, wt)
+}
+
+type mockBarrierCallbackWorker struct {
+	store         state.Signaler
+	startedCh     chan struct{}
+	atBarrierCh   chan struct{}
+	releaseExitCh chan struct{}
+	exitedCh      chan struct{}
+}
+
+func (m *mockBarrierCallbackWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *git.Worktree, feedback string, em orchestrator.Emitter) error {
+	close(m.startedCh)
+	defer close(m.exitedCh)
+
+	if m.store != nil {
+		_, _ = m.store.WriteCallbackSignal(task.ID, "solution attempt")
+	}
+
+	<-ctx.Done()
+	close(m.atBarrierCh)
+	<-m.releaseExitCh
+	return ctx.Err()
+}
+
+type cancelParentValidator struct {
+	cancelParent func()
+	passes       bool
+	fatal        bool
+}
+
+func (v *cancelParentValidator) Evaluate(ctx context.Context, task *state.Task, wt *git.Worktree, em orchestrator.Emitter) (orchestrator.ValidationVerdict, error) {
+	if v.cancelParent != nil {
+		v.cancelParent()
+	}
+	return orchestrator.ValidationVerdict{
+		Passes:   v.passes,
+		Fatal:    v.fatal,
+		Feedback: "evaluated feedback",
+	}, nil
+}
+
+func TestRunTask_FatalCallback_WorkerJoinedBeforeDestroy_EvenIfParentCanceled(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := state.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	task, _ := store.CreateTask("task-fatal-parent-cancel", 3, "")
+
+	router := &mockRouter{decision: orchestrator.DecisionProceed}
+	worker := &mockBarrierCallbackWorker{
+		store:         store,
+		startedCh:     make(chan struct{}),
+		atBarrierCh:   make(chan struct{}),
+		releaseExitCh: make(chan struct{}),
+		exitedCh:      make(chan struct{}),
+	}
+
+	parentCtx, cancelParent := context.WithCancel(context.Background())
+	defer cancelParent()
+
+	validator := &cancelParentValidator{
+		cancelParent: cancelParent,
+		passes:       false,
+		fatal:        true,
+	}
+
+	var destroyedBeforeWorkerExited atomic.Bool
+	gitMock := &mockGitWithDestroyHook{
+		mockGit: mockGit{valid: true},
+		onDestroyWorkerWorktree: func() {
+			select {
+			case <-worker.exitedCh:
+			default:
+				destroyedBeforeWorkerExited.Store(true)
+			}
+		},
+	}
+
+	orch := newTestOrchestrator(store, router, worker, validator, gitMock)
+
+	runErrCh := make(chan error, 1)
+	go func() {
+		runErrCh <- orch.RunTask(parentCtx, task.ID)
+	}()
+
+	// Wait until worker is canceled and stopped at the exit barrier.
+	select {
+	case <-worker.atBarrierCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker did not reach exit barrier after cancellation")
+	}
+
+	// While worker is held at the barrier, RunTask must NOT return and worktree must NOT be destroyed.
+	select {
+	case err := <-runErrCh:
+		t.Fatalf("RunTask returned before worker was released and joined: %v", err)
+	default:
+	}
+	if destroyedBeforeWorkerExited.Load() {
+		t.Fatal("DestroyWorktree was called while worker was still running")
+	}
+
+	// Release the worker to complete its exit.
+	close(worker.releaseExitCh)
+
+	// Now RunTask must finish and return ErrValidationFailed.
+	select {
+	case err := <-runErrCh:
+		if !errors.Is(err, orchestrator.ErrValidationFailed) {
+			t.Fatalf("expected ErrValidationFailed, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunTask did not return after worker was released")
+	}
+
+	select {
+	case <-worker.exitedCh:
+	default:
+		t.Fatal("worker exitedCh not closed after RunTask returned")
+	}
+	if destroyedBeforeWorkerExited.Load() {
+		t.Fatal("DestroyWorktree was called before worker exited")
+	}
+}
+
+func TestRunTask_RetryExhaustionCallback_WorkerJoinedBeforeDestroy_EvenIfParentCanceled(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := state.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	// MaxRetries = 0 so the first revision request exhausts retries.
+	task, _ := store.CreateTask("task-exhaust-parent-cancel", 0, "")
+
+	router := &mockRouter{decision: orchestrator.DecisionProceed}
+	worker := &mockBarrierCallbackWorker{
+		store:         store,
+		startedCh:     make(chan struct{}),
+		atBarrierCh:   make(chan struct{}),
+		releaseExitCh: make(chan struct{}),
+		exitedCh:      make(chan struct{}),
+	}
+
+	parentCtx, cancelParent := context.WithCancel(context.Background())
+	defer cancelParent()
+
+	validator := &cancelParentValidator{
+		cancelParent: cancelParent,
+		passes:       false,
+		fatal:        false,
+	}
+
+	var destroyedBeforeWorkerExited atomic.Bool
+	gitMock := &mockGitWithDestroyHook{
+		mockGit: mockGit{valid: true},
+		onDestroyWorkerWorktree: func() {
+			select {
+			case <-worker.exitedCh:
+			default:
+				destroyedBeforeWorkerExited.Store(true)
+			}
+		},
+	}
+
+	orch := newTestOrchestrator(store, router, worker, validator, gitMock)
+
+	runErrCh := make(chan error, 1)
+	go func() {
+		runErrCh <- orch.RunTask(parentCtx, task.ID)
+	}()
+
+	select {
+	case <-worker.atBarrierCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker did not reach exit barrier after cancellation")
+	}
+
+	select {
+	case err := <-runErrCh:
+		t.Fatalf("RunTask returned before worker was released and joined on retry exhaustion: %v", err)
+	default:
+	}
+	if destroyedBeforeWorkerExited.Load() {
+		t.Fatal("DestroyWorktree was called while worker was still running on retry exhaustion")
+	}
+
+	close(worker.releaseExitCh)
+
+	select {
+	case err := <-runErrCh:
+		if !errors.Is(err, orchestrator.ErrValidationFailed) {
+			t.Fatalf("expected ErrValidationFailed, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunTask did not return after worker was released")
+	}
+
+	select {
+	case <-worker.exitedCh:
+	default:
+		t.Fatal("worker did not exit before RunTask returned")
+	}
+
+	if destroyedBeforeWorkerExited.Load() {
+		t.Fatal("DestroyWorktree was called before worker exited on retry exhaustion")
+	}
+}
+
+type failingWriteSignaler struct {
+	state.Signaler
+	writeErr error
+}
+
+func (s *failingWriteSignaler) WriteCallbackVerdict(callbackID int64, verdict string) error {
+	return s.writeErr
+}
+
+type mockSimpleCallbackWorker struct {
+	store     state.Signaler
+	startedCh chan struct{}
+	exitedCh  chan struct{}
+}
+
+func (m *mockSimpleCallbackWorker) ProduceSolution(ctx context.Context, task *state.Task, wt *git.Worktree, feedback string, em orchestrator.Emitter) error {
+	close(m.startedCh)
+	defer close(m.exitedCh)
+
+	if m.store != nil {
+		_, _ = m.store.WriteCallbackSignal(task.ID, "solution attempt")
+	}
+
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestRunTask_Callback_WriteVerdictError_WorkerJoined(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := state.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	task, _ := store.CreateTask("task-write-err", 3, "")
+
+	router := &mockRouter{decision: orchestrator.DecisionProceed}
+	worker := &mockSimpleCallbackWorker{
+		store:     store,
+		startedCh: make(chan struct{}),
+		exitedCh:  make(chan struct{}),
+	}
+	validator := &mockValidator{passes: true, fatal: false}
+	gitMock := &mockGit{valid: true}
+
+	expectedErr := errors.New("simulated disk full writing verdict")
+	signaler := &failingWriteSignaler{
+		Signaler: store,
+		writeErr: expectedErr,
+	}
+
+	b := bus.NewChannelBus()
+	orch := orchestrator.NewOrchestrator(store, signaler, b, router, &mockRetriever{}, worker, validator, gitMock, worktreeRoot())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	err = orch.RunTask(ctx, task.ID)
+	if err == nil {
+		t.Fatal("expected error from RunTask when WriteCallbackVerdict fails, got nil")
+	}
+	if !strings.Contains(err.Error(), "write callback verdict") || !errors.Is(err, expectedErr) {
+		t.Fatalf("expected wrapped write callback verdict error, got: %v", err)
+	}
+
+	// Worker must have exited before RunTask returned.
+	select {
+	case <-worker.exitedCh:
+	default:
+		t.Fatal("worker did not exit before RunTask returned on write error")
+	}
+
+	// Task must not be approved or finalized.
+	taskAfter, err := store.GetTask(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if taskAfter.CurrentState == state.StateApproved || taskAfter.CurrentState == state.StateCommitted {
+		t.Fatalf("task must not be approved on write verdict failure, state: %s", taskAfter.CurrentState)
 	}
 }
