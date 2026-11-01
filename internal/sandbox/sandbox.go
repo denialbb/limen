@@ -82,8 +82,6 @@ type Policy struct {
 	// ExtraPath are additional directories prepended to the sandbox PATH. They
 	// must also appear in ExtraMounts so the binaries are reachable.
 	ExtraPath []string
-	// LogDir receives the generated broker credential files. Unused.
-	LogDir string
 }
 
 // Mount is one extra bind mount. ReadOnly mounts cannot be written by the task.

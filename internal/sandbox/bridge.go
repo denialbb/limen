@@ -9,7 +9,8 @@ import (
 	"sync"
 )
 
-// activeBridgeListeners tracks listeners created by ServeBridge.
+// activeBridgeListeners is a test seam: it exposes the listener ServeBridge
+// created so tests can close it and observe a clean shutdown.
 var activeBridgeListeners sync.Map
 
 // ServeBridge listens on listenAddr (loopback TCP) and splices bytes to the
@@ -21,12 +22,8 @@ func ServeBridge(socketPath, listenAddr string) error {
 	}
 	defer ln.Close()
 
-	activeBridgeListeners.Store(ln.Addr().String(), ln)
 	activeBridgeListeners.Store(listenAddr, ln)
-	defer func() {
-		activeBridgeListeners.Delete(ln.Addr().String())
-		activeBridgeListeners.Delete(listenAddr)
-	}()
+	defer activeBridgeListeners.Delete(listenAddr)
 
 	for {
 		tcpConn, err := ln.Accept()
