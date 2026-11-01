@@ -166,8 +166,14 @@ func (v *agentValidator) Evaluate(ctx context.Context, task *state.Task, wt *git
 	cmd.Dir = wt.Path
 
 	// Prepend the limen binary dir to PATH for parity with workers (harmless;
-	// the validator reports via the stdout sentinel, not a limen callback).
-	if selfPath, err := os.Executable(); err == nil {
+	// the validator reports via the stdout sentinel, not a limen callback). A
+	// sandbox replaces the whole environment instead and gives the validator no
+	// egress at all.
+	if v.opts.validatorSandbox != nil {
+		if err := v.opts.validatorSandbox(cmd, wt.Path); err != nil {
+			return false, "", fmt.Errorf("%s validator: %w", v.dialect.name, err)
+		}
+	} else if selfPath, err := os.Executable(); err == nil {
 		selfDir := filepath.Dir(selfPath)
 		cmd.Env = append(os.Environ(), fmt.Sprintf("PATH=%s:%s", selfDir, os.Getenv("PATH")))
 	}

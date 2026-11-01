@@ -145,8 +145,13 @@ func (w *agentWorker) ProduceSolution(ctx context.Context, task *state.Task, wt 
 	cmd.Dir = wt.Path
 
 	// Prepend the limen binary's directory to PATH so the agent can call
-	// `limen ready-for-review` without knowing the absolute path.
-	if selfPath, err := os.Executable(); err == nil {
+	// `limen ready-for-review` without knowing the absolute path. A sandbox
+	// replaces the whole environment instead, and refuses to run unsandboxed.
+	if w.opts.sandbox != nil {
+		if err := w.opts.sandbox(cmd, wt.Path); err != nil {
+			return fmt.Errorf("%s worker: %w", w.dialect.name, err)
+		}
+	} else if selfPath, err := os.Executable(); err == nil {
 		selfDir := filepath.Dir(selfPath)
 		cmd.Env = append(os.Environ(), fmt.Sprintf("PATH=%s:%s", selfDir, os.Getenv("PATH")))
 	}

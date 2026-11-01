@@ -66,14 +66,14 @@ a - b
 INNER
 
 # Call ready-for-review (will fail).
-` + binaryPath + ` ready-for-review --task-id ` + taskID + ` --db-path ` + dbPath + ` --summary "first attempt" > /dev/null
+` + "limen" + ` ready-for-review --task-id ` + taskID + ` --db-path ` + dbPath + ` --summary "first attempt" > /dev/null
 
 cat > $DIR/math.txt << 'INNER'
 a + b
 INNER
 
 # Call ready-for-review (will pass).
-` + binaryPath + ` ready-for-review --task-id ` + taskID + ` --db-path ` + dbPath + ` --summary "second attempt" > /dev/null
+` + "limen" + ` ready-for-review --task-id ` + taskID + ` --db-path ` + dbPath + ` --summary "second attempt" > /dev/null
 
 echo '{"type":"agent_end"}'
 `

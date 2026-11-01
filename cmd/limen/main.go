@@ -23,6 +23,7 @@ import (
 	"github.com/denialbb/limen/internal/remote"
 	"github.com/denialbb/limen/internal/retrieval"
 	rtr "github.com/denialbb/limen/internal/router"
+	"github.com/denialbb/limen/internal/sandbox"
 	"github.com/denialbb/limen/internal/state"
 	"github.com/denialbb/limen/internal/tui"
 )
@@ -195,6 +196,8 @@ func main() {
 		runReadyForReviewCmd()
 	case "submit-verdict":
 		runSubmitVerdictCmd()
+	case "sandbox-bridge":
+		runSandboxBridgeCmd()
 	case "tui":
 		// NOTE: Explicit alias for the default bare invocation. Kept so that
 		// subcommand-style invocation remains available alongside the simple form.
@@ -229,6 +232,9 @@ type runtimeWiring struct {
 	gitClient    orchestrator.GitClient
 	worktreeRoot string
 	logDir       string
+	// closeSandbox releases the run's host-side sandbox services. Nil for the
+	// mock backend, which never sandboxes.
+	closeSandbox func()
 }
 
 // wiringOptions carries the backend-selection knobs from flag parsing into
@@ -246,9 +252,30 @@ type wiringOptions struct {
 	validatorModel   string
 	coverageFloor    float64
 	confidenceFloor  float64
+	trustRepo        bool
+	registries       []string
+	brokerUpstream   string
 }
 
-func newRuntimeWiring(repoPath string, wo wiringOptions) runtimeWiring {
+// releaseSandbox frees the run's sandbox services. It is a no-op for backends
+// that never sandbox (mock, cli).
+func (w runtimeWiring) releaseSandbox() {
+	if w.closeSandbox != nil {
+		w.closeSandbox()
+	}
+}
+
+// stringList collects a repeatable string flag.
+type stringList []string
+
+func (s *stringList) String() string { return strings.Join(*s, ",") }
+
+func (s *stringList) Set(v string) error {
+	*s = append(*s, v)
+	return nil
+}
+
+func newRuntimeWiring(repoPath string, wo wiringOptions, store sandbox.CallbackStore) runtimeWiring {
 	manager := git.NewWorktreeManager(repoPath, detectDefaultBranch(repoPath))
 	worktreeRoot, err := filepath.Abs(filepath.Join(repoPath, ".limen", "worktrees"))
 	if err != nil {
@@ -269,28 +296,45 @@ func newRuntimeWiring(repoPath string, wo wiringOptions) runtimeWiring {
 	)}
 	w.worker = selectWorker(wo, logDir, manager)
 	w.validator = selectValidator(wo, logDir, manager)
+
+	// Every model-backed backend runs sandboxed. A missing runtime or an
+	// unsupported backend aborts the run: there is no unsandboxed fallback.
+	// The mock and cli backends are local test doubles with no subprocess.
+	if workerSandboxable(wo.workerBackend) || validatorSandboxable(wo.validatorBackend) {
+		sb, err := newSandboxWiring(wo, store)
+		if err != nil {
+			log.Fatalf("Sandbox unavailable: %v", err)
+		}
+		w.closeSandbox = sb.close
+		if sb.worker != nil {
+			w.worker = selectWorker(wo, logDir, manager, remote.WithSandbox(sb.worker))
+		}
+		if sb.validator != nil {
+			w.validator = selectValidator(wo, logDir, manager, remote.WithValidatorSandbox(sb.validator))
+		}
+	}
 	return w
 }
 
 // selectWorker maps --worker-backend to a concrete orchestrator.Worker. The
 // dialect drivers (claude, opencode, agy) live behind the generic agentWorker
 // seam (issue 015); pi and the placeholder cliWorker are unchanged.
-func selectWorker(wo wiringOptions, logDir string, manager orchestrator.GitClient) orchestrator.Worker {
+func selectWorker(wo wiringOptions, logDir string, _ orchestrator.GitClient, extra ...remote.Option) orchestrator.Worker {
 	switch wo.workerBackend {
 	case "claude":
-		return remote.NewClaudeWorker(remote.WithLogDir(logDir), remote.WithWorkerModel(wo.workerModel))
+		return remote.NewClaudeWorker(append([]remote.Option{remote.WithLogDir(logDir), remote.WithWorkerModel(wo.workerModel)}, extra...)...)
 	case "opencode":
-		return remote.NewOpencodeWorker(remote.WithLogDir(logDir), remote.WithWorkerModel(wo.workerModel))
+		return remote.NewOpencodeWorker(append([]remote.Option{remote.WithLogDir(logDir), remote.WithWorkerModel(wo.workerModel)}, extra...)...)
 	case "agy":
-		return remote.NewAgyWorker(remote.WithLogDir(logDir), remote.WithWorkerModel(wo.workerModel))
+		return remote.NewAgyWorker(append([]remote.Option{remote.WithLogDir(logDir), remote.WithWorkerModel(wo.workerModel)}, extra...)...)
 	case "mock":
 		return remote.NewWorker([]string{"python", "-m", "limen.mock.worker", wo.mockTranscript}, remote.WithLogDir(logDir))
 	case "pi":
-		return remote.NewPiWorker(
+		return remote.NewPiWorker(append([]remote.Option{
 			remote.WithLogDir(logDir),
 			remote.WithPiProvider(wo.workerPiProvider),
 			remote.WithPiModel(wo.workerPiModel),
-		)
+		}, extra...)...)
 	default:
 		return &cliWorker{}
 	}
@@ -299,14 +343,14 @@ func selectWorker(wo wiringOptions, logDir string, manager orchestrator.GitClien
 // selectValidator maps --validator-backend to a concrete orchestrator.Validator.
 // "shell" is the current cliValidator (shell-command gate); the agent
 // validators report via the LIMEN_VERDICT stdout sentinel (issue 015).
-func selectValidator(wo wiringOptions, logDir string, manager orchestrator.GitClient) orchestrator.Validator {
+func selectValidator(wo wiringOptions, logDir string, manager orchestrator.GitClient, extra ...remote.Option) orchestrator.Validator {
 	switch wo.validatorBackend {
 	case "agy":
-		return remote.NewAgyValidator(remote.WithLogDir(logDir), remote.WithValidatorModel(wo.validatorModel))
+		return remote.NewAgyValidator(append([]remote.Option{remote.WithLogDir(logDir), remote.WithValidatorModel(wo.validatorModel)}, extra...)...)
 	case "claude":
-		return remote.NewClaudeValidator(remote.WithLogDir(logDir), remote.WithValidatorModel(wo.validatorModel))
+		return remote.NewClaudeValidator(append([]remote.Option{remote.WithLogDir(logDir), remote.WithValidatorModel(wo.validatorModel)}, extra...)...)
 	case "opencode":
-		return remote.NewOpencodeValidator(remote.WithLogDir(logDir), remote.WithValidatorModel(wo.validatorModel))
+		return remote.NewOpencodeValidator(append([]remote.Option{remote.WithLogDir(logDir), remote.WithValidatorModel(wo.validatorModel)}, extra...)...)
 	case "mock":
 		return remote.NewValidator([]string{"python", "-m", "limen.mock.validator", wo.mockTranscript}, manager, remote.WithLogDir(logDir))
 	default: // "shell"
@@ -341,6 +385,10 @@ func registerWiringFlags(fs *flag.FlagSet) func() wiringOptions {
 	validatorModel := fs.String("validator-model", "", "Model for the agy/claude/opencode validator")
 	coverageFloor := fs.Float64("coverage-floor", -1, "Coverage threshold for the router cascade (default: 0.60, set to 0 to force PROCEED)")
 	confidenceFloor := fs.Float64("confidence-floor", -1, "Confidence threshold for the router cascade (default: 0.50, set to 0 to force PROCEED)")
+	trustRepo := fs.Bool("trust-repo", false, "Treat the target repository as trusted (allows package-registry egress; the sandbox stays on)")
+	registries := &stringList{}
+	fs.Var(registries, "allow-registry", "Package-registry host a trusted repository may reach (repeatable)")
+	brokerUpstream := fs.String("broker-upstream", "", "API base URL the sandbox broker forwards provider requests to (default: derived from the backend)")
 	return func() wiringOptions {
 		return wiringOptions{
 			mock:             *mockFlag,
@@ -354,6 +402,9 @@ func registerWiringFlags(fs *flag.FlagSet) func() wiringOptions {
 			validatorModel:   *validatorModel,
 			coverageFloor:    *coverageFloor,
 			confidenceFloor:  *confidenceFloor,
+			trustRepo:        *trustRepo,
+			registries:       *registries,
+			brokerUpstream:   *brokerUpstream,
 		}
 	}
 }
@@ -429,7 +480,8 @@ func runTaskInteractive(taskID, prompt, dbPath, repoPath string, wo wiringOption
 
 	_ = registerDBPath(taskID, dbPath)
 
-	rw := newRuntimeWiring(repoPath, wo)
+	rw := newRuntimeWiring(repoPath, wo, store)
+	defer rw.releaseSandbox()
 	eventBus := bus.NewChannelBus()
 	defer eventBus.Close()
 
@@ -504,7 +556,8 @@ func runTaskWithConfig(taskID, prompt, dbPath, repoPath string, wo wiringOptions
 
 	_ = registerDBPath(taskID, dbPath)
 
-	rw := newRuntimeWiring(repoPath, wo)
+	rw := newRuntimeWiring(repoPath, wo, store)
+	defer rw.releaseSandbox()
 	eventBus := bus.NewChannelBus()
 	defer eventBus.Close()
 
@@ -585,6 +638,17 @@ func runReadyForReviewCmd() {
 		fmt.Fprintf(os.Stderr, "--task-id and --summary are required\n")
 		flags.Usage()
 		os.Exit(1)
+	}
+
+	// Inside a sandbox there is no orchestration database to write to: the host
+	// mediates the callback over a unix socket instead.
+	if socket := os.Getenv("LIMEN_IPC_SOCKET"); socket != "" {
+		raw, err := sandbox.CallbackRoundTrip(socket, *taskID, *summary)
+		if err != nil {
+			log.Fatalf("Callback failed: %v", err)
+		}
+		fmt.Println(string(raw))
+		return
 	}
 
 	if *dbPath == "" {
