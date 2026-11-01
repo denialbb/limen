@@ -50,6 +50,13 @@ if [[ ! -x ./limen ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# tui-wait regression (always)
+# ---------------------------------------------------------------------------
+echo "== tui-wait regression =="
+./scripts/test-tui-wait.sh || fail "test-tui-wait regression failed"
+pass "tui-wait regression passed"
+
+# ---------------------------------------------------------------------------
 # pipe mode (always)
 # ---------------------------------------------------------------------------
 echo "== pipe mode =="
