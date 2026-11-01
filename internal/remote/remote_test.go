@@ -768,7 +768,7 @@ func TestValidator_StreamingSubprocess(t *testing.T) {
 	helperPath := buildWorkerHelper(t, tmpDir, `{"kind":"event","event":{"type":"validator.examining","payload":{"criteria":["compiles","correctness"]}}}
 {"kind":"event","event":{"type":"validator.criterion_result","payload":{"criterion":"compiles","passed":true,"detail":"OK"}}}
 {"kind":"event","event":{"type":"validator.criterion_result","payload":{"criterion":"correctness","passed":false,"detail":"off-by-one"}}}
-{"kind":"event","event":{"type":"validator.verdict","payload":{"passes":false,"feedback":"Solution has bug"}}}`)
+{"kind":"event","event":{"type":"validator.verdict","payload":{"passes":false,"fatal":false,"feedback":"Solution has bug"}}}`)
 
 	mockGitClient := &mockGit{diff: "mock diff"}
 	v := remote.NewValidator([]string{helperPath}, mockGitClient)
@@ -812,5 +812,37 @@ func TestValidator_StreamingSubprocess(t *testing.T) {
 	ev4, ok := recorder.events[3].(*bus.ValidatorVerdict)
 	if !ok || ev4.Passes || ev4.Feedback != "Solution has bug" {
 		t.Errorf("unexpected fourth event: %+v", recorder.events[3])
+	}
+}
+
+func TestValidator_StreamingSubprocessRejectsMalformedVerdicts(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload string
+	}{
+		{name: "missing passes", payload: `{"fatal":false,"feedback":"invalid"}`},
+		{name: "missing fatal", payload: `{"passes":true,"feedback":"invalid"}`},
+		{name: "non-boolean passes", payload: `{"passes":"true","fatal":false,"feedback":"invalid"}`},
+		{name: "non-boolean fatal", payload: `{"passes":true,"fatal":"false","feedback":"invalid"}`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			output := `{"kind":"event","event":{"type":"validator.verdict","payload":` + tc.payload + `}}`
+			helperPath := buildWorkerHelper(t, tmpDir, output)
+			validator := remote.NewValidator([]string{helperPath}, &mockGit{diff: "mock diff"})
+			recorder := bus.NewRecorderEmitter()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			_, err := validator.Evaluate(ctx, &state.Task{ID: "task-1"}, &git.Worktree{Path: tmpDir}, recorder)
+			if err == nil {
+				t.Fatal("expected malformed verdict transport error")
+			}
+			if got := len(recorder.EventsByKind("ValidatorVerdict")); got != 0 {
+				t.Fatalf("transport error emitted %d ValidatorVerdict events", got)
+			}
+		})
 	}
 }

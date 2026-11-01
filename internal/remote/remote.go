@@ -601,25 +601,21 @@ func (v *ndjsonValidator) Evaluate(ctx context.Context, task *state.Task, wt *gi
 			}
 
 		case "validator.verdict":
-			payload, _ := decodePayload(env.Event.Payload)
-			passes, _ := payload["passes"].(bool)
-			fatal, _ := payload["fatal"].(bool)
-			feedback, _ := payload["feedback"].(string)
-
-			if passes && fatal {
-				return orchestrator.ValidationVerdict{}, fmt.Errorf("remote: invalid validator verdict: passes=true cannot be fatal")
+			verdict, err := state.UnmarshalVerdict(env.Event.Payload)
+			if err != nil {
+				return orchestrator.ValidationVerdict{}, fmt.Errorf("remote: invalid validator verdict: %w", err)
 			}
 
 			if em != nil {
 				em.Publish(&bus.ValidatorVerdict{
 					TaskID:    task.ID,
-					Passes:    passes,
-					Fatal:     fatal,
-					Feedback:  feedback,
+					Passes:    verdict.Passes,
+					Fatal:     verdict.Fatal,
+					Feedback:  verdict.Feedback,
 					Timestamp: time.Now(),
 				})
 			}
-			return orchestrator.ValidationVerdict{Passes: passes, Fatal: fatal, Feedback: feedback}, nil
+			return orchestrator.ValidationVerdict{Passes: verdict.Passes, Fatal: verdict.Fatal, Feedback: verdict.Feedback}, nil
 		}
 	}
 }

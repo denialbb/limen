@@ -142,6 +142,21 @@ func TestAgentValidatorInjectedCommand(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "missing fatal is transport error",
+			body:    `echo 'LIMEN_VERDICT: {"passes":true,"feedback":"missing fatal"}'`,
+			wantErr: true,
+		},
+		{
+			name:    "non-boolean passes is transport error",
+			body:    `echo 'LIMEN_VERDICT: {"passes":"true","fatal":false,"feedback":"invalid"}'`,
+			wantErr: true,
+		},
+		{
+			name:    "non-boolean fatal is transport error",
+			body:    `echo 'LIMEN_VERDICT: {"passes":true,"fatal":"false","feedback":"invalid"}'`,
+			wantErr: true,
+		},
+		{
 			name:    "invalid passes with fatal is transport error",
 			body:    `echo 'LIMEN_VERDICT: {"passes":true,"fatal":true,"feedback":"invalid"}'`,
 			wantErr: true,
