@@ -142,9 +142,8 @@ func Available() error {
 // Wrap rewrites cmd so it runs inside the sandbox described by p. The caller
 // keeps using *exec.Cmd; the returned error means the task must not run.
 func Wrap(cmd *exec.Cmd, p Policy) error {
-	if err := Available(); err != nil {
-		return err
-	}
+	// Validate the policy before probing the runtime: a misconfigured policy is
+	// a bug in the caller, not a missing dependency.
 	if len(cmd.Args) == 0 {
 		return errors.New("sandbox: empty command")
 	}
@@ -161,6 +160,9 @@ func Wrap(cmd *exec.Cmd, p Policy) error {
 		return fmt.Errorf("sandbox: provider %q has no allowlisted hosts; egress would be unbounded", p.Provider.Name)
 	}
 
+	if err := Available(); err != nil {
+		return err
+	}
 	bwrap, err := exec.LookPath(bwrapBinary)
 	if err != nil {
 		return fmt.Errorf("sandbox: locate bwrap: %w", err)
